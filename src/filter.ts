@@ -1,86 +1,253 @@
 import fs from 'node:fs'
 
-// Feed matching logic. The patterns themselves live in /data/filters.json
-// (mounted to ./data on the host) and are hot-reloaded: edit the file and
-// the running service picks it up within ~10 seconds, no rebuild or restart.
-// A broken edit (invalid JSON or regex) is rejected as a whole — the service
-// keeps the previous config and logs the error.
+// Feed matching logic for every feed this instance serves. The configs live
+// in /data/filters.json (mounted to ./data on the host) and are hot-reloaded:
+// edit the file and the running service picks it up within ~10 seconds, no
+// rebuild or restart. A broken edit (invalid JSON or regex) is rejected as a
+// whole — the service keeps the previous config and logs the error.
 //
-// Matching semantics (SkyFeed-compatible, useful when migrating from there):
-//   - include patterns match text|alt_text
-//   - exclude patterns match text|alt_text|link (external card + facet URIs)
-//   - replies and self-labeled posts are dropped; reposts need no code
-//     (different collection, never indexed); list-based exclusion is
-//     handled in subscription.ts via excludeListUri from the same file.
+// Shape:
+//   { "feeds": { "<rkey>": { …config… }, … } }
+// The rkey is the feed's record key, which must equal the algo shortname.
+//
+// SkyFeed semantics preserved (ported from the skyfeedBuilder blocks that
+// were public in each feed's app.bsky.feed.generator record):
+//   - a feed matches by text patterns, by author DID, or by both
+//   - each pattern declares which fields it looks at (`target`)
+//   - replies are always dropped, matching the "remove reply" block every
+//     one of these feeds had; reposts need no code (different collection,
+//     never indexed); "remove by list" is handled in subscription.ts via
+//     each feed's excludeListUri.
 
 const FILTERS_PATH = process.env.FEEDGEN_FILTERS_PATH ?? '/data/filters.json'
 const RELOAD_CHECK_INTERVAL_MS = 10_000
 
-type RawPattern = { pattern: string; flags?: string; comment?: string }
+// Which fields a pattern is tested against. Mirrors SkyFeed's block targets.
+type Target = 'text' | 'text|alt_text' | 'text|alt_text|link'
+const TARGETS: Target[] = ['text', 'text|alt_text', 'text|alt_text|link']
+
+const DEFAULT_INCLUDE_TARGET: Target = 'text|alt_text'
+const DEFAULT_EXCLUDE_TARGET: Target = 'text|alt_text|link'
+
+type RawPattern = {
+  pattern: string
+  flags?: string
+  comment?: string
+  target?: Target
+}
 
 // allow  — no effect; exclude — such posts never enter the feed;
 // only   — ONLY such posts enter the feed
 type ToggleMode = 'allow' | 'exclude' | 'only'
 const TOGGLE_MODES: ToggleMode[] = ['allow', 'exclude', 'only']
 
-type RawFilters = {
-  includePatterns: RawPattern[]
-  excludePatterns: RawPattern[]
+// hours — drop posts older than N hours; count — keep the newest N posts.
+export type Retention =
+  | { type: 'hours'; value: number }
+  | { type: 'count'; value: number }
+
+const DEFAULT_RETENTION: Retention = { type: 'hours', value: 72 }
+
+type RawFeed = {
+  displayName?: string
+  includePatterns?: RawPattern[]
+  excludePatterns?: RawPattern[]
+  includeDids?: string[]
   excludeListUri?: string
   gifPosts?: ToggleMode
   quotePosts?: ToggleMode
+  selfLabeledPosts?: ToggleMode
+  retention?: Retention
 }
 
-type CompiledFilters = {
-  include: RegExp[]
-  exclude: RegExp[]
+type RawFilters = {
+  feeds?: Record<string, RawFeed>
+} & RawFeed // legacy single-feed shape, see compileLegacy()
+
+type CompiledPattern = { re: RegExp; target: Target }
+
+export type FeedConfig = {
+  key: string
+  displayName?: string
+  include: CompiledPattern[]
+  exclude: CompiledPattern[]
+  includeDids: Set<string>
   excludeListUri?: string
   gifPosts: ToggleMode
   quotePosts: ToggleMode
+  selfLabeledPosts: ToggleMode
+  retention: Retention
 }
 
-let current: CompiledFilters | undefined
+// Before multi-feed support this service ran one feed, named by
+// FEEDGEN_SHORTNAME. That variable is no longer used for routing — feeds now
+// come from filters.json — but it still names the feed a legacy-shaped
+// filters.json describes, so an old config keeps working.
+const LEGACY_FEED_KEY = process.env.FEEDGEN_SHORTNAME ?? 'my-feed'
 
-const compile = (raw: RawFilters): CompiledFilters => {
-  if (!Array.isArray(raw.includePatterns) || !Array.isArray(raw.excludePatterns)) {
-    throw new Error('includePatterns / excludePatterns must be arrays')
+let current: Map<string, FeedConfig> | undefined
+// Feeds registered at startup. A hot reload cannot add a feed (its algo would
+// not be routed), so we warn instead of silently accepting one.
+let registeredKeys: Set<string> | undefined
+
+const compilePattern = (
+  p: RawPattern,
+  where: string,
+  i: number,
+  defaultTarget: Target,
+): CompiledPattern => {
+  if (typeof p.pattern !== 'string') {
+    throw new Error(`${where}[${i}]: "pattern" must be a string`)
   }
-  const toRegExp = (p: RawPattern, where: string, i: number): RegExp => {
-    if (typeof p.pattern !== 'string') {
-      throw new Error(`${where}[${i}]: "pattern" must be a string`)
-    }
-    try {
-      return new RegExp(p.pattern, p.flags ?? 'iu')
-    } catch (err) {
-      throw new Error(`${where}[${i}] (${p.comment ?? 'no comment'}): ${err}`)
+  const target = p.target ?? defaultTarget
+  if (!TARGETS.includes(target)) {
+    throw new Error(
+      `${where}[${i}]: "target" must be one of ${TARGETS.join(' | ')}`,
+    )
+  }
+  try {
+    return { re: new RegExp(p.pattern, p.flags ?? 'iu'), target }
+  } catch (err) {
+    throw new Error(`${where}[${i}] (${p.comment ?? 'no comment'}): ${err}`)
+  }
+}
+
+const compileToggle = (
+  value: ToggleMode | undefined,
+  name: string,
+  fallback: ToggleMode,
+): ToggleMode => {
+  if (value === undefined) return fallback
+  if (!TOGGLE_MODES.includes(value)) {
+    throw new Error(`${name}: must be one of ${TOGGLE_MODES.join(' | ')}`)
+  }
+  return value
+}
+
+const compileRetention = (
+  value: Retention | undefined,
+  where: string,
+): Retention => {
+  if (value === undefined) return DEFAULT_RETENTION
+  if (value.type !== 'hours' && value.type !== 'count') {
+    throw new Error(`${where}.retention.type: must be "hours" or "count"`)
+  }
+  if (!Number.isInteger(value.value) || value.value <= 0) {
+    throw new Error(`${where}.retention.value: must be a positive integer`)
+  }
+  return { type: value.type, value: value.value }
+}
+
+const compileFeed = (key: string, raw: RawFeed): FeedConfig => {
+  const where = `feeds["${key}"]`
+  const includeRaw = raw.includePatterns ?? []
+  const excludeRaw = raw.excludePatterns ?? []
+  const didsRaw = raw.includeDids ?? []
+
+  if (!Array.isArray(includeRaw) || !Array.isArray(excludeRaw)) {
+    throw new Error(`${where}: includePatterns / excludePatterns must be arrays`)
+  }
+  if (!Array.isArray(didsRaw)) {
+    throw new Error(`${where}: includeDids must be an array`)
+  }
+  for (const did of didsRaw) {
+    if (typeof did !== 'string' || !did.startsWith('did:')) {
+      throw new Error(`${where}.includeDids: "${did}" is not a DID`)
     }
   }
-  const toggle = (value: ToggleMode | undefined, name: string): ToggleMode => {
-    if (value === undefined) return 'allow'
-    if (!TOGGLE_MODES.includes(value)) {
-      throw new Error(`${name}: must be one of ${TOGGLE_MODES.join(' | ')}`)
-    }
-    return value
+  // A feed with no positive criterion at all would match every post on the
+  // network. Refuse it rather than flood the feed.
+  if (includeRaw.length === 0 && didsRaw.length === 0) {
+    throw new Error(
+      `${where}: needs at least one includePattern or one includeDid — ` +
+        `a feed with neither would match the entire firehose`,
+    )
   }
+
   return {
-    include: raw.includePatterns.map((p, i) => toRegExp(p, 'includePatterns', i)),
-    exclude: raw.excludePatterns.map((p, i) => toRegExp(p, 'excludePatterns', i)),
+    key,
+    displayName: raw.displayName,
+    include: includeRaw.map((p, i) =>
+      compilePattern(p, `${where}.includePatterns`, i, DEFAULT_INCLUDE_TARGET),
+    ),
+    exclude: excludeRaw.map((p, i) =>
+      compilePattern(p, `${where}.excludePatterns`, i, DEFAULT_EXCLUDE_TARGET),
+    ),
+    includeDids: new Set(didsRaw),
     excludeListUri: raw.excludeListUri,
-    gifPosts: toggle(raw.gifPosts, 'gifPosts'),
-    quotePosts: toggle(raw.quotePosts, 'quotePosts'),
+    gifPosts: compileToggle(raw.gifPosts, `${where}.gifPosts`, 'allow'),
+    quotePosts: compileToggle(raw.quotePosts, `${where}.quotePosts`, 'allow'),
+    // Defaults to exclude: that is what this service has always done, and
+    // letting self-labeled (adult) posts through is not a change to make
+    // silently. Set "allow" per feed to match SkyFeed's behaviour exactly.
+    selfLabeledPosts: compileToggle(
+      raw.selfLabeledPosts,
+      `${where}.selfLabeledPosts`,
+      'exclude',
+    ),
+    retention: compileRetention(raw.retention, where),
   }
+}
+
+const compile = (raw: RawFilters): Map<string, FeedConfig> => {
+  // Legacy single-feed shape (no "feeds" key, patterns at the top level).
+  // Accepted so that restoring an old filters.json without restoring the old
+  // code still starts up.
+  if (!raw.feeds) {
+    if (!raw.includePatterns) {
+      throw new Error('filters.json: missing "feeds" object')
+    }
+    console.warn(
+      `filters: legacy single-feed config detected — treating it as feed "${LEGACY_FEED_KEY}"`,
+    )
+    return new Map([[LEGACY_FEED_KEY, compileFeed(LEGACY_FEED_KEY, raw)]])
+  }
+
+  if (typeof raw.feeds !== 'object' || Array.isArray(raw.feeds)) {
+    throw new Error('filters.json: "feeds" must be an object keyed by rkey')
+  }
+  const keys = Object.keys(raw.feeds)
+  if (keys.length === 0) throw new Error('filters.json: "feeds" is empty')
+
+  const out = new Map<string, FeedConfig>()
+  for (const key of keys) {
+    out.set(key, compileFeed(key, raw.feeds[key]))
+  }
+  return out
 }
 
 export const loadFilters = (): void => {
   const raw = JSON.parse(fs.readFileSync(FILTERS_PATH, 'utf8')) as RawFilters
   const compiled = compile(raw)
+
+  if (registeredKeys) {
+    for (const key of compiled.keys()) {
+      if (!registeredKeys.has(key)) {
+        console.warn(
+          `filters: feed "${key}" appeared in the config but has no route — ` +
+            `restart the service to serve it`,
+        )
+      }
+    }
+    for (const key of registeredKeys) {
+      if (!compiled.has(key)) {
+        console.warn(
+          `filters: feed "${key}" is routed but missing from the config — ` +
+            `it will match nothing until the config is fixed`,
+        )
+      }
+    }
+  }
+
   current = compiled
-  console.log(
-    `filters: loaded ${compiled.include.length} include / ${compiled.exclude.length} exclude patterns` +
-      (compiled.excludeListUri ? ' + exclude list' : ''),
-  )
-  if (compiled.include.length === 0) {
-    console.warn('filters: includePatterns is empty — the feed will match NOTHING')
+  for (const cfg of compiled.values()) {
+    console.log(
+      `filters: ${cfg.key}${cfg.displayName ? ` (${cfg.displayName})` : ''} — ` +
+        `${cfg.include.length} include / ${cfg.exclude.length} exclude patterns, ` +
+        `${cfg.includeDids.size} author DIDs, ` +
+        `retention ${cfg.retention.value} ${cfg.retention.type}` +
+        (cfg.excludeListUri ? ', + exclude list' : ''),
+    )
   }
 }
 
@@ -88,6 +255,8 @@ export const loadFilters = (): void => {
 // reloads only log and keep the previous config.
 export const watchFilters = (): void => {
   loadFilters()
+  // Whatever loaded first defines the routable set for this process.
+  registeredKeys = new Set(current!.keys())
   fs.watchFile(FILTERS_PATH, { interval: RELOAD_CHECK_INTERVAL_MS }, () => {
     try {
       loadFilters()
@@ -97,8 +266,31 @@ export const watchFilters = (): void => {
   })
 }
 
-export const getExcludeListUri = (): string | undefined =>
-  current?.excludeListUri
+// Reads the config without installing the watcher. For one-shot scripts.
+export const loadFiltersOnce = (): Map<string, FeedConfig> => {
+  loadFilters()
+  return current!
+}
+
+export const getFeedKeys = (): string[] => [...(current?.keys() ?? [])]
+
+export const getFeedConfig = (key: string): FeedConfig | undefined =>
+  current?.get(key)
+
+// feed key -> moderation list URI, for the feeds that declare one
+export const getExcludeListUris = (): Map<string, string> => {
+  const out = new Map<string, string>()
+  for (const cfg of current?.values() ?? []) {
+    if (cfg.excludeListUri) out.set(cfg.key, cfg.excludeListUri)
+  }
+  return out
+}
+
+export const getRetentions = (): Map<string, Retention> => {
+  const out = new Map<string, Retention>()
+  for (const cfg of current?.values() ?? []) out.set(cfg.key, cfg.retention)
+  return out
+}
 
 type ExternalCard = { uri?: string; title?: string; description?: string }
 type ImageWithAlt = { alt?: string }
@@ -144,6 +336,19 @@ const linkStrings = (record: MatchablePost): string[] => {
   return parts
 }
 
+// The three haystacks a pattern can be tested against, built once per post.
+export type Haystacks = Record<Target, string>
+
+export const buildHaystacks = (record: MatchablePost): Haystacks => {
+  const text = record.text ?? ''
+  const withAlt = [text, ...altTexts(record)].join('\n')
+  return {
+    text,
+    'text|alt_text': withAlt,
+    'text|alt_text|link': [withAlt, ...linkStrings(record)].join('\n'),
+  }
+}
+
 // Bluesky GIFs are external embeds pointing at Tenor (or a bare .gif URL)
 const isGifPost = (record: MatchablePost): boolean => {
   const uri =
@@ -155,29 +360,71 @@ const isQuotePost = (record: MatchablePost): boolean =>
   record.embed?.$type === 'app.bsky.embed.record' ||
   record.embed?.$type === 'app.bsky.embed.recordWithMedia'
 
+const isSelfLabeled = (record: MatchablePost): boolean =>
+  (record.labels?.values?.length ?? 0) > 0
+
 const applyToggle = (mode: ToggleMode, is: boolean): boolean => {
   if (mode === 'exclude' && is) return false
   if (mode === 'only' && !is) return false
   return true
 }
 
-export const matchesFeed = (record: MatchablePost): boolean => {
-  if (!current) return false
-  // SkyFeed "remove reply" block
-  if (record.reply) return false
-  // SkyFeed "remove has_labels" block (self-labels are all we can see at ingest)
-  if ((record.labels?.values?.length ?? 0) > 0) return false
-  if (!applyToggle(current.gifPosts, isGifPost(record))) return false
-  if (!applyToggle(current.quotePosts, isQuotePost(record))) return false
+// Why a post did not land in a feed. Used by scripts/whyNot.ts.
+export type MatchVerdict = { matched: boolean; reason?: string }
 
-  const text = record.text ?? ''
-  // include: text + alt text, same targets as the SkyFeed positive block
-  const includeHaystack = [text, ...altTexts(record)].join('\n')
-  if (!includeHaystack.trim()) return false
-  if (!current.include.some((re) => re.test(includeHaystack))) return false
+export const matchesFeedVerbose = (
+  cfg: FeedConfig,
+  record: MatchablePost,
+  authorDid: string,
+  hay: Haystacks = buildHaystacks(record),
+): MatchVerdict => {
+  // SkyFeed "remove reply" block — present on every feed we serve
+  if (record.reply) return { matched: false, reason: 'is a reply' }
+  if (!applyToggle(cfg.selfLabeledPosts, isSelfLabeled(record))) {
+    return { matched: false, reason: `selfLabeledPosts=${cfg.selfLabeledPosts}` }
+  }
+  if (!applyToggle(cfg.gifPosts, isGifPost(record))) {
+    return { matched: false, reason: `gifPosts=${cfg.gifPosts}` }
+  }
+  if (!applyToggle(cfg.quotePosts, isQuotePost(record))) {
+    return { matched: false, reason: `quotePosts=${cfg.quotePosts}` }
+  }
 
-  // exclude: text + alt text + links (external card and facet link URIs)
-  const excludeHaystack = [includeHaystack, ...linkStrings(record)].join('\n')
-  if (current.exclude.some((re) => re.test(excludeHaystack))) return false
-  return true
+  // Author gate (SkyFeed "did" input block)
+  if (cfg.includeDids.size > 0 && !cfg.includeDids.has(authorDid)) {
+    return { matched: false, reason: `author ${authorDid} not in includeDids` }
+  }
+
+  // Text gate. A DID-only feed has no include patterns and skips this.
+  if (cfg.include.length > 0) {
+    if (!hay['text|alt_text|link'].trim()) {
+      return { matched: false, reason: 'post has no text, alt text or links' }
+    }
+    const hit = cfg.include.find((p) => p.re.test(hay[p.target]))
+    if (!hit) return { matched: false, reason: 'no includePattern matched' }
+  }
+
+  const blocked = cfg.exclude.find((p) => p.re.test(hay[p.target]))
+  if (blocked) {
+    return {
+      matched: false,
+      reason: `excluded by /${blocked.re.source.slice(0, 60)}…/ on ${blocked.target}`,
+    }
+  }
+
+  return { matched: true }
+}
+
+// Every feed this post belongs to. One pass over the shared haystacks.
+export const matchingFeeds = (
+  record: MatchablePost,
+  authorDid: string,
+): string[] => {
+  if (!current) return []
+  const hay = buildHaystacks(record)
+  const out: string[] = []
+  for (const cfg of current.values()) {
+    if (matchesFeedVerbose(cfg, record, authorDid, hay).matched) out.push(cfg.key)
+  }
+  return out
 }

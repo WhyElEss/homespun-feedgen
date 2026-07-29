@@ -1,13 +1,19 @@
-// Diagnoses why given posts did (not) get into the feed.
+// Diagnoses why given posts did (not) get into each feed.
 // Usage: ts-node scripts/whyNot.ts <bsky.app post URL or at-uri> ...
-// Fetches each post from the public AppView, replays the real filter
-// pipeline (live /data/filters.json) stage by stage, and checks the DB.
+//        ts-node scripts/whyNot.ts --feed <rkey> <url> ...   (one feed only)
+//
+// Fetches each post from the public AppView and replays the real filter
+// pipeline against the live /data/filters.json, then checks the DB. The
+// verdict comes from filter.ts itself — this script deliberately holds no
+// copy of the matching logic, so it cannot drift from what the service does.
 import Database from 'better-sqlite3'
 import {
-  loadFilters,
-  matchesFeed,
-  getExcludeListUri,
+  loadFiltersOnce,
+  matchesFeedVerbose,
+  buildHaystacks,
+  getExcludeListUris,
   MatchablePost,
+  FeedConfig,
 } from '../src/filter'
 
 const API = 'https://public.api.bsky.app'
@@ -27,10 +33,8 @@ const toAtUri = async (input: string): Promise<string> => {
   return `at://${actor}/app.bsky.feed.post/${rkey}`
 }
 
-const fetchListDids = async (): Promise<Set<string>> => {
-  const uri = getExcludeListUri()
+const fetchListDids = async (uri: string): Promise<Set<string>> => {
   const dids = new Set<string>()
-  if (!uri) return dids
   let cursor: string | undefined
   do {
     const params = new URLSearchParams({ list: uri, limit: '100' })
@@ -47,45 +51,37 @@ const fetchListDids = async (): Promise<Set<string>> => {
   return dids
 }
 
-// mirrors filter.ts internals for stage-by-stage reporting
-const altTexts = (r: MatchablePost): string[] => {
-  const images = r.embed?.images ?? r.embed?.media?.images ?? []
-  const parts = images.map((i) => i.alt ?? '')
-  const v = r.embed?.alt ?? r.embed?.media?.alt
-  if (v) parts.push(v)
-  return parts
-}
-const linkStrings = (r: MatchablePost): string[] => {
-  const parts: string[] = []
-  const ext = r.embed?.external ?? r.embed?.media?.external
-  if (ext) parts.push(ext.uri ?? '', ext.title ?? '', ext.description ?? '')
-  for (const f of r.facets ?? [])
-    for (const ft of f.features ?? [])
-      if (ft.$type === 'app.bsky.richtext.facet#link' && ft.uri) parts.push(ft.uri)
-  return parts
-}
-
 const run = async () => {
-  loadFilters()
-  const raw = JSON.parse(
-    require('node:fs').readFileSync(
-      process.env.FEEDGEN_FILTERS_PATH ?? '/data/filters.json',
-      'utf8',
-    ),
-  )
-  const include: RegExp[] = raw.includePatterns.map(
-    (p: any) => new RegExp(p.pattern, p.flags ?? 'iu'),
-  )
-  const exclude: { re: RegExp; comment: string }[] = raw.excludePatterns.map(
-    (p: any) => ({
-      re: new RegExp(p.pattern, p.flags ?? 'iu'),
-      comment: p.comment ?? '?',
-    }),
-  )
-  const listDids = await fetchListDids()
-  const db = new Database('/data/db.sqlite', { readonly: true })
+  const argv = process.argv.slice(2)
+  let onlyFeed: string | undefined
+  const flag = argv.indexOf('--feed')
+  if (flag !== -1) {
+    onlyFeed = argv[flag + 1]
+    argv.splice(flag, 2)
+  }
+  if (argv.length === 0) {
+    console.error('usage: whyNot.ts [--feed <rkey>] <post url or at-uri> ...')
+    process.exit(2)
+  }
 
-  for (const arg of process.argv.slice(2)) {
+  const configs = loadFiltersOnce()
+  let feeds: FeedConfig[] = [...configs.values()]
+  if (onlyFeed) {
+    const one = configs.get(onlyFeed)
+    if (!one) throw new Error(`no such feed in filters.json: ${onlyFeed}`)
+    feeds = [one]
+  }
+
+  // Moderation lists, fetched once per distinct URI
+  const listDids = new Map<string, Set<string>>()
+  for (const uri of new Set(getExcludeListUris().values())) {
+    listDids.set(uri, await fetchListDids(uri))
+  }
+
+  const db = new Database('/data/db.sqlite', { readonly: true })
+  const inFeed = db.prepare('select 1 from post where uri = ? and feed = ?')
+
+  for (const arg of argv) {
     const uri = await toAtUri(arg)
     console.log(`\n=== ${uri}`)
     const res = await fetch(
@@ -97,40 +93,51 @@ const run = async () => {
       continue
     }
     const p = posts[0]
-    const r = p.record as MatchablePost
+    const record = p.record as MatchablePost
     const did = uri.slice('at://'.length).split('/')[0]
+    const hay = buildHaystacks(record)
 
-    const inDb = db.prepare('select 1 from post where uri = ?').get(uri)
-    console.log(`  author: ${p.author.handle}`)
-    console.log(`  in DB: ${inDb ? 'YES (it IS in the feed)' : 'no'}`)
-    console.log(`  createdAt: ${(r as any).createdAt}`)
-    console.log(`  text: ${(r.text ?? '').slice(0, 120).replace(/\n/g, ' ')}`)
-    const alts = altTexts(r)
-    if (alts.length) console.log(`  alt: ${alts.join(' | ').slice(0, 120)}`)
-
-    if (r.reply) console.log('  -> DROPPED: is a reply')
-    if ((r.labels as any)?.values?.length) console.log('  -> DROPPED: has self-labels')
-    if (listDids.has(did)) console.log('  -> DROPPED: author is on the exclude list')
-
-    const embedType = r.embed?.$type ?? 'none'
-    console.log(`  embed: ${embedType}`)
-    if (raw.quotePosts === 'exclude' &&
-        (embedType === 'app.bsky.embed.record' || embedType === 'app.bsky.embed.recordWithMedia'))
-      console.log('  -> DROPPED: quote post (quotePosts=exclude)')
-    const extUri = r.embed?.external?.uri ?? r.embed?.media?.external?.uri ?? ''
-    if (raw.gifPosts === 'exclude' && (/\.gif(?:$|\?)/i.test(extUri) || /(?:^|\.)tenor\.com\//i.test(extUri)))
-      console.log('  -> DROPPED: gif post (gifPosts=exclude)')
-
-    const incHay = [r.text ?? '', ...alts].join('\n')
-    const incHit = include.some((re) => re.test(incHay))
-    console.log(`  include match (text+alt): ${incHit ? 'YES' : 'NO'}`)
-    const excHay = [incHay, ...linkStrings(r)].join('\n')
-    const excHits = exclude.filter((e) => e.re.test(excHay))
-    for (const e of excHits) {
-      const m = excHay.match(e.re)
-      console.log(`  exclude HIT [${e.comment}]: "${m?.[0]}"`)
+    console.log(`  author:    ${p.author.handle} (${did})`)
+    console.log(`  createdAt: ${(record as any).createdAt}`)
+    console.log(`  embed:     ${record.embed?.$type ?? 'none'}`)
+    console.log(`  text:      ${(record.text ?? '').slice(0, 120).replace(/\n/g, ' ')}`)
+    if (hay['text|alt_text'] !== hay.text) {
+      console.log(
+        `  alt:       ${hay['text|alt_text'].slice(hay.text.length).trim().slice(0, 120).replace(/\n/g, ' ')}`,
+      )
     }
-    console.log(`  verdict matchesFeed(): ${matchesFeed(r)}`)
+
+    for (const cfg of feeds) {
+      const label = `${cfg.key} (${cfg.displayName ?? '?'})`
+      const stored = !!inFeed.get(uri, cfg.key)
+      const muted =
+        !!cfg.excludeListUri && !!listDids.get(cfg.excludeListUri)?.has(did)
+
+      const verdict = matchesFeedVerbose(cfg, record, did, hay)
+      // The service applies the moderation list on top of the match
+      const wouldIndex = verdict.matched && !muted
+
+      console.log(`\n  --- ${label}`)
+      console.log(`      in DB:    ${stored ? 'YES — it IS in this feed' : 'no'}`)
+      console.log(`      verdict:  ${wouldIndex ? 'MATCHES' : 'dropped'}`)
+      if (!verdict.matched) console.log(`      reason:   ${verdict.reason}`)
+      else if (muted) console.log(`      reason:   author is on this feed's exclude list`)
+
+      // Which include pattern fired, for the matching case
+      if (verdict.matched && cfg.include.length > 0) {
+        const hit = cfg.include.find((x) => x.re.test(hay[x.target]))
+        if (hit) {
+          const m = hay[hit.target].match(hit.re)
+          console.log(`      include:  matched "${m?.[0]}" on ${hit.target}`)
+        }
+      }
+      if (stored !== wouldIndex) {
+        console.log(
+          `      NOTE: DB and current filters disagree — the config likely ` +
+            `changed after this post was seen, or retention pruned it.`,
+        )
+      }
+    }
   }
 }
 

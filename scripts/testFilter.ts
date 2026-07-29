@@ -1,98 +1,226 @@
-import { matchesFeed, loadFilters, MatchablePost } from '../src/filter'
+import {
+  loadFiltersOnce,
+  matchesFeedVerbose,
+  MatchablePost,
+  FeedConfig,
+} from '../src/filter'
 
 // Smoke tests for the filter pipeline, run against filters.example.json:
 //   FEEDGEN_FILTERS_PATH=./filters.example.json ts-node scripts/testFilter.ts
-// (wired up as `yarn test:filters`). Point FEEDGEN_FILTERS_PATH at your
-// real data/filters.json to sanity-check a config before deploying it —
-// but then adjust the expectations below to your own patterns.
+// (wired up as `yarn test:filters`). Point FEEDGEN_FILTERS_PATH at your real
+// data/filters.json to sanity-check a config before deploying it.
+//
+// Two halves:
+//   1. invariants checked against EVERY feed in whatever config is loaded,
+//      so they stay useful once you have replaced the examples
+//   2. cases for the example feeds, run only when those keys are present
 
-loadFilters()
+const SOMEONE = 'did:plc:exampleexampleexample'
+const EXAMPLE_AUTHOR = 'did:plc:XXXXXXXXXXXXXXXXXXXXXXXX'
 
-const cases: { name: string; post: MatchablePost; expect: boolean }[] = [
+let failed = 0
+let checks = 0
+
+const check = (name: string, got: boolean, want: boolean, note?: string) => {
+  checks++
+  const ok = got === want
+  if (!ok) failed++
+  console.log(
+    `  ${ok ? 'PASS' : 'FAIL'}  ${name}` +
+      (ok ? '' : ` (expected ${want}, got ${got})`) +
+      (note && !got ? `  [${note}]` : ''),
+  )
+}
+
+const verdict = (cfg: FeedConfig, post: MatchablePost, did = SOMEONE) =>
+  matchesFeedVerbose(cfg, post, did)
+
+const configs = loadFiltersOnce()
+
+// ── 1. invariants, whatever is configured ───────────────────────────────
+console.log('\n── invariants (every configured feed)')
+for (const cfg of configs.values()) {
+  const label = cfg.displayName ? `${cfg.key} (${cfg.displayName})` : cfg.key
+
+  // Without a positive criterion a feed would match the whole firehose.
+  check(
+    `${label}: has a positive criterion`,
+    cfg.include.length > 0 || cfg.includeDids.size > 0,
+    true,
+  )
+
+  // Replies are dropped everywhere — these are top-level-post feeds by
+  // construction.
+  check(
+    `${label}: drops replies`,
+    verdict(cfg, { text: 'anything at all', reply: { parent: {} } }).matched,
+    false,
+  )
+
+  if (cfg.includeDids.size > 0) {
+    check(
+      `${label}: rejects an unlisted author`,
+      verdict(cfg, { text: 'hello' }, 'did:plc:notonthelist').matched,
+      false,
+    )
+    if (cfg.include.length === 0) {
+      // A pure author feed takes anything that account posts, text or not.
+      const listed = [...cfg.includeDids][0]
+      const own = verdict(cfg, { text: 'hello' }, listed)
+      check(`${label}: accepts a listed author`, own.matched, true, own.reason)
+    }
+  } else {
+    check(
+      `${label}: rejects a post with no text, alt or links`,
+      verdict(cfg, { text: '' }).matched,
+      false,
+    )
+  }
+}
+
+// ── 2. cases for the example config ─────────────────────────────────────
+type Case = {
+  feed: string
+  name: string
+  post: MatchablePost
+  did?: string
+  expect: boolean
+}
+
+const exampleCases: Case[] = [
   {
-    name: 'plain topic post',
-    post: { text: 'Dialed in a new espresso this morning' },
+    feed: 'my-feed',
+    name: 'on-topic post',
+    post: { text: 'A slow pour-over on a rainy morning' },
     expect: true,
   },
   {
-    name: 'hashtag',
-    post: { text: 'Saturday brew #CoffeeCommunity' },
+    feed: 'my-feed',
+    name: 'hashtag match',
+    post: { text: 'first flat white of the day #CoffeeCommunity' },
     expect: true,
   },
   {
-    name: 'match via image alt text',
+    feed: 'my-feed',
+    name: 'match via alt text',
     post: {
-      text: 'Look at this!',
+      text: 'this morning',
       embed: {
         $type: 'app.bsky.embed.images',
-        images: [{ alt: 'latte art in a white cup' }],
+        images: [{ alt: 'an aeropress on a kitchen counter' }],
       },
     },
     expect: true,
   },
   {
-    name: 'reply removed',
-    post: { text: 'espresso is life', reply: { parent: {} } },
-    expect: false,
-  },
-  {
-    name: 'self-labeled removed',
-    post: { text: 'espresso', labels: { values: [{ val: 'sexual' }] } },
-    expect: false,
-  },
-  {
+    feed: 'my-feed',
     name: 'marketplace excluded',
-    post: { text: 'Selling my espresso machine on ebay' },
+    post: { text: 'selling my espresso machine on ebay' },
     expect: false,
   },
   {
+    feed: 'my-feed',
     name: 'price tag excluded',
-    post: { text: 'Espresso beans, $19.99 a bag' },
+    post: { text: 'fresh coffee beans, $18.50 a bag' },
     expect: false,
   },
   {
-    name: 'exclude via external link card',
-    post: {
-      text: 'Great deal on an aeropress',
-      embed: {
-        $type: 'app.bsky.embed.external',
-        external: { uri: 'https://www.ebay.com/itm/123', title: 'listing' },
-      },
-    },
+    // Must match an includePattern first, or this would pass for the wrong
+    // reason — never reaching the exclude it is meant to exercise.
+    feed: 'my-feed',
+    name: 'homonym excluded even though the topic matches',
+    post: { text: 'fresh coffee beans stacked on my coffee table books' },
     expect: false,
   },
   {
-    name: 'gif allowed by example config',
-    post: {
-      text: 'pour over time',
-      embed: {
-        $type: 'app.bsky.embed.external',
-        external: { uri: 'https://media.tenor.com/x/coffee.gif' },
-      },
-    },
-    expect: true,
-  },
-  {
-    name: 'no text no alt',
-    post: { text: '' },
-    expect: false,
-  },
-  {
+    feed: 'my-feed',
     name: 'unrelated post',
     post: { text: 'Beautiful sunset tonight' },
     expect: false,
   },
+
+  {
+    feed: 'my-hashtag-feed',
+    name: 'hashtag in the post text',
+    post: { text: 'tried a rosetta today #LatteArt' },
+    expect: true,
+  },
+  {
+    feed: 'my-hashtag-feed',
+    name: "target 'text': an alt-text-only match does not count",
+    post: {
+      text: 'tried something new today',
+      embed: {
+        $type: 'app.bsky.embed.images',
+        images: [{ alt: 'a cup showing #LatteArt' }],
+      },
+    },
+    expect: false,
+  },
+  {
+    feed: 'my-hashtag-feed',
+    name: 'excluded by the link card alone',
+    post: {
+      text: 'new rosetta attempt #LatteArt',
+      embed: {
+        $type: 'app.bsky.embed.external',
+        external: {
+          uri: 'https://example.com/sale',
+          title: 'Promo code inside',
+          description: 'discount on beans',
+        },
+      },
+    },
+    expect: false,
+  },
+
+  {
+    feed: 'my-author-feed',
+    name: 'post from a listed account',
+    post: { text: 'anything this account says' },
+    did: EXAMPLE_AUTHOR,
+    expect: true,
+  },
+  {
+    feed: 'my-author-feed',
+    name: 'identical post from anyone else',
+    post: { text: 'anything this account says' },
+    did: SOMEONE,
+    expect: false,
+  },
+  {
+    feed: 'my-author-feed',
+    name: 'textless post from a listed account still counts',
+    post: {
+      text: '',
+      embed: { $type: 'app.bsky.embed.images', images: [{ alt: '' }] },
+    },
+    did: EXAMPLE_AUTHOR,
+    expect: true,
+  },
 ]
 
-let failed = 0
-for (const c of cases) {
-  const got = matchesFeed(c.post)
-  const ok = got === c.expect
-  if (!ok) failed++
-  console.log(`${ok ? 'PASS' : 'FAIL'}  ${c.name} (expected ${c.expect}, got ${got})`)
+const present = exampleCases.filter((c) => configs.has(c.feed))
+if (present.length === 0) {
+  console.log(
+    '\n── example-config cases: skipped (no example feed keys in this ' +
+      'config — expected once you have replaced them with your own)',
+  )
+} else {
+  let lastFeed = ''
+  for (const c of present) {
+    const cfg = configs.get(c.feed)!
+    if (c.feed !== lastFeed) {
+      console.log(`\n── ${c.feed} (${cfg.displayName ?? '?'})`)
+      lastFeed = c.feed
+    }
+    const v = verdict(cfg, c.post, c.did ?? SOMEONE)
+    check(c.name, v.matched, c.expect, v.reason)
+  }
 }
+
 if (failed > 0) {
-  console.error(`\n${failed} case(s) failed`)
+  console.error(`\n${failed} of ${checks} check(s) failed`)
   process.exit(1)
 }
-console.log('\nAll cases passed')
+console.log(`\nAll ${checks} checks passed`)

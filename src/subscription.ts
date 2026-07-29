@@ -1,6 +1,7 @@
 import WebSocket from 'ws'
 import { Database } from './db'
-import { matchesFeed, watchFilters, getExcludeListUri } from './filter'
+import { matchingFeeds, getExcludeListUris } from './filter'
+import { pruneFeeds } from './gc'
 
 import type { MatchablePost } from './filter'
 
@@ -34,21 +35,23 @@ const CURSOR_SAVE_INTERVAL_MS = 10_000
 // SkyFeed "remove by list" block: member DIDs are refreshed periodically
 const LIST_REFRESH_INTERVAL_MS = 60 * 60 * 1000
 
-// Old posts are garbage-collected (the feed is recency-based)
+// Old posts are garbage-collected. How much each feed keeps is per-feed
+// config (retention: by age or by post count) — see filter.ts.
 const GC_INTERVAL_MS = 60 * 60 * 1000
-const KEEP_HOURS = 72
 
 export class JetstreamSubscription {
   private ws?: WebSocket
   private cursor?: number
-  private excludedDids = new Set<string>()
+  // feed key -> DIDs muted for that feed by its moderation list
+  private excludedDids = new Map<string, Set<string>>()
 
   constructor(public db: Database, public service: string) {}
 
   async run(reconnectDelay: number) {
-    watchFilters() // throws on a broken config at startup — fail loudly
+    // filters are loaded by FeedGenerator.create() before routing is built
     this.cursor = await this.loadCursor()
     await this.refreshExcludedDids()
+    await this.gc()
     this.connect(reconnectDelay)
     setInterval(() => {
       if (this.cursor) {
@@ -61,15 +64,12 @@ export class JetstreamSubscription {
       this.refreshExcludedDids().catch(() => {})
     }, LIST_REFRESH_INTERVAL_MS)
     setInterval(() => {
-      const cutoff = new Date(
-        Date.now() - KEEP_HOURS * 3600 * 1000,
-      ).toISOString()
-      this.db
-        .deleteFrom('post')
-        .where('indexedAt', '<', cutoff)
-        .execute()
-        .catch((err) => console.error('gc failed', err))
+      this.gc().catch((err) => console.error('gc failed', err))
     }, GC_INTERVAL_MS)
+  }
+
+  private async gc() {
+    await pruneFeeds(this.db)
   }
 
   private connect(reconnectDelay: number) {
@@ -115,54 +115,76 @@ export class JetstreamSubscription {
     }
 
     if (evt.commit.operation === 'create') {
-      if (this.excludedDids.has(evt.did)) return
       const record = evt.commit.record
-      if (!record || !matchesFeed(record)) return
+      if (!record) return
+      // A post can belong to several feeds; each feed applies its own
+      // moderation list on top of the shared match.
+      const feeds = matchingFeeds(record, evt.did).filter(
+        (feed) => !this.excludedDids.get(feed)?.has(evt.did),
+      )
+      if (feeds.length === 0) return
+
+      const indexedAt = new Date().toISOString()
       await this.db
         .insertInto('post')
-        .values({
-          uri,
-          cid: evt.commit.cid ?? '',
-          indexedAt: new Date().toISOString(),
-        })
+        .values(
+          feeds.map((feed) => ({
+            uri,
+            cid: evt.commit!.cid ?? '',
+            indexedAt,
+            feed,
+          })),
+        )
         .onConflict((oc) => oc.doNothing())
         .execute()
     }
-    // 'update' operations are not relevant for this feed
+    // 'update' operations are not relevant for these feeds
   }
 
-  private async refreshExcludedDids() {
-    try {
-      const listUri = getExcludeListUri()
-      if (!listUri) {
-        this.excludedDids = new Set()
-        return
+  private async fetchList(listUri: string): Promise<Set<string>> {
+    const dids = new Set<string>()
+    let cursor: string | undefined
+    do {
+      const params = new URLSearchParams({ list: listUri, limit: '100' })
+      if (cursor) params.set('cursor', cursor)
+      const res = await fetch(
+        `https://public.api.bsky.app/xrpc/app.bsky.graph.getList?${params.toString()}`,
+      )
+      if (!res.ok) throw new Error(`getList: HTTP ${res.status}`)
+      const data = (await res.json()) as {
+        cursor?: string
+        items: { subject: { did: string } }[]
       }
-      const dids = new Set<string>()
-      let cursor: string | undefined
-      do {
-        const params = new URLSearchParams({
-          list: listUri,
-          limit: '100',
-        })
-        if (cursor) params.set('cursor', cursor)
-        const res = await fetch(
-          `https://public.api.bsky.app/xrpc/app.bsky.graph.getList?${params.toString()}`,
-        )
-        if (!res.ok) throw new Error(`getList: HTTP ${res.status}`)
-        const data = (await res.json()) as {
-          cursor?: string
-          items: { subject: { did: string } }[]
-        }
-        for (const item of data.items) dids.add(item.subject.did)
-        cursor = data.cursor
-      } while (cursor)
-      this.excludedDids = dids
-      console.log(`exclude list: ${dids.size} accounts`)
-    } catch (err) {
-      // keep the previous set on failure — better stale than empty
-      console.error('exclude list: refresh failed', err)
+      for (const item of data.items) dids.add(item.subject.did)
+      cursor = data.cursor
+    } while (cursor)
+    return dids
+  }
+
+  // Cached per list URI so that several feeds sharing one list cost one fetch,
+  // and so a failed refresh can fall back to the previous membership.
+  private listCache = new Map<string, Set<string>>()
+
+  private async refreshExcludedDids() {
+    const byFeed = getExcludeListUris()
+    const next = new Map<string, Set<string>>()
+
+    for (const uri of new Set(byFeed.values())) {
+      try {
+        const dids = await this.fetchList(uri)
+        this.listCache.set(uri, dids)
+        console.log(`exclude list ${uri}: ${dids.size} accounts`)
+      } catch (err) {
+        // keep the previous membership on failure — better stale than empty
+        console.error(`exclude list ${uri}: refresh failed`, err)
+      }
     }
+
+    for (const [feed, uri] of byFeed) {
+      const dids = this.listCache.get(uri)
+      if (dids) next.set(feed, dids)
+    }
+    this.excludedDids = next
   }
 
   private async loadCursor(): Promise<number | undefined> {

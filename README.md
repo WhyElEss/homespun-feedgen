@@ -6,10 +6,11 @@ Self-hosted [Bluesky feed generator](https://github.com/bluesky-social/feed-gene
 
 - **[Jetstream](https://github.com/bluesky-social/jetstream) instead of the raw firehose** — lightweight JSON over WebSocket, server-side collection filtering. A fraction of the CPU and traffic; this is what makes a Pi comfortable.
 - **SQLite on disk** with a persisted cursor — restarts and reboots lose nothing.
-- **Hot-reloadable filters in one JSON file** (`data/filters.json`) — regex include/exclude with SkyFeed-compatible semantics, GIF/quote-post toggles, moderation-list exclusion. Edit the file; the running service picks it up in ~10 seconds. A broken edit is rejected — the service keeps the previous config and logs the error.
+- **Many feeds, one process** — all your feeds share a single Jetstream connection, one database and one tunnel. Each keeps its own patterns, its own moderation list and its own retention window.
+- **Hot-reloadable filters in one JSON file** (`data/filters.json`) — regex include/exclude with SkyFeed-compatible semantics, author-DID feeds, GIF/quote-post toggles, moderation-list exclusion. Edit the file; the running service picks it up in ~10 seconds. A broken edit is rejected — the service keeps the previous config and logs the error.
 - **Cloudflare Tunnel** in the same compose stack — HTTPS on port 443 with no port forwarding and no public IP.
 - **`did:plc` service identity** (survives domain changes), with a script that handles email-2FA accounts.
-- **A SkyFeed migration kit** — take over an existing feed in place, keeping its AT-URI, subscribers and likes. Plus a disaster-recovery script for the classic "unpublish" accident.
+- **A SkyFeed migration kit** — take over an existing feed in place, keeping its AT-URI, subscribers and likes. Plus a disaster-recovery script, because SkyFeed deletes the live record more readily than you would expect (see below — this one bites).
 - **Diagnostics** — `whyNot.ts` explains stage-by-stage why a given post did or didn't get into your feed; `probeJetstream.js` measures the lag of all public Jetstream instances (yes, one of them can silently fall an hour behind).
 
 Everything below assumes Docker + the compose plugin on a 64-bit host (`uname -m` → `aarch64` on a Pi).
@@ -20,16 +21,19 @@ Everything below assumes Docker + the compose plugin on a 64-bit host (`uname -m
 git clone https://github.com/WhyElEss/homespun-feedgen.git
 cd homespun-feedgen
 
-cp .env.example .env        # fill in: hostname, publisher DID, shortname
+cp .env.example .env        # fill in: hostname, publisher DID, service DID
 chmod 600 .env
 mkdir -p data
-cp filters.example.json data/filters.json   # put your regexes here
+cp filters.example.json data/filters.json   # declare your feeds here
 
 docker compose up -d --build feedgen
 docker compose logs -f feedgen
-# expect: "filters: loaded N include / M exclude patterns"
+# expect: "filters: my-feed (…) — N include / M exclude patterns, …"
+#         "algos: serving 1 feed(s): my-feed"
 #         "jetstream: connecting to wss://..."
 ```
+
+Which feeds exist is decided by `data/filters.json`, not by the environment: every key under `feeds` is one feed, and the key is the record key you publish it under.
 
 ### Expose it: Cloudflare Tunnel
 
@@ -50,39 +54,89 @@ docker compose run --rm feedgen yarn setupServiceDid
 
 ```bash
 docker compose run --rm feedgen yarn publishFeed
-# recordName must equal FEEDGEN_SHORTNAME
+# recordName must equal the feed's key in data/filters.json
 ```
+
+Run it once per feed. A feed whose record key has no entry in `filters.json` is not served, and a feed in `filters.json` with no published record is simply never asked for.
 
 ## Migrating a feed from SkyFeed (keep your subscribers)
 
 Subscriptions and likes reference the feed's **AT-URI** (`at://<your-did>/app.bsky.feed.generator/<rkey>`). Keep the rkey — keep the audience. The plan:
 
-1. Find your feed's record: `https://<your-pds>/xrpc/com.atproto.repo.listRecords?repo=<your-did>&collection=app.bsky.feed.generator`. The rkey is the last URI segment (SkyFeed rkeys look like `aaakbsi6aireu`). Set it as `FEEDGEN_SHORTNAME` in `.env`.
-2. Port your SkyFeed blocks into `data/filters.json`: the positive regex block → `includePatterns`, each inverted block → an entry in `excludePatterns`, a "remove by list" block → `excludeListUri`. Replies and reposts need nothing (dropped automatically / never indexed). Note: JS RegExp has no inline `(?i)` — case-insensitivity comes from the default `iu` flags.
-3. Run the stack (steps above, including `setupServiceDid`) and let the database fill for a day — until then SkyFeed keeps serving the feed; there is no downtime window.
-4. **Remove the feed from SkyFeed's builder.** Do this BEFORE the next step, while the record is still SkyFeed's. The builder's **unpublish button deletes the live record** — with the feed listed there, one click nukes it.
-5. Flip the record: `docker compose run --rm feedgen yarn migrateFeed` — backs up the original record to `./data/`, changes only its `did` to your service DID (name, description, avatar, createdAt stay), drops the `skyfeedBuilder` block, and confirms before writing.
-6. Verify: `curl "https://public.api.bsky.app/xrpc/app.bsky.feed.getFeedGenerator?feed=at://<did>/app.bsky.feed.generator/<rkey>"` → `"isOnline": true, "isValid": true`, likeCount intact.
+> ### Read this before you touch SkyFeed
+>
+> **Two different SkyFeed actions delete your live record: the "unpublish" button, and removing the feed from the builder list.** The second one is not obvious and there is no warning. There is no safe way to "tidy up in SkyFeed first".
+>
+> Deleting the record also makes the PDS garbage-collect its **avatar blob**, so a later restore cannot reuse the old blob reference — it has to re-upload the image bytes. **Save the record JSON *and* the avatar image before you start.**
+>
+> So: repoint first, then leave the orphaned SkyFeed entry alone forever.
 
-If the record does get deleted anyway (step 4 skipped, button pressed): `yarn restoreFeed` recreates it at the same rkey from the backup. Subscribers' pins and likes live in *their* repos and survive the outage — move fast and most of the audience never notices. Expect feed *search* to take longer to recover than the feed itself.
+**Back up first** — one command per feed, before anything else:
+
+```bash
+PDS=https://<your-pds>; DID=<your-did>; RKEY=<rkey>
+curl -s "$PDS/xrpc/com.atproto.repo.getRecord?repo=$DID&collection=app.bsky.feed.generator&rkey=$RKEY" \
+  > data/feed-record-backup-$RKEY.json
+CID=$(python3 -c "import json;print(json.load(open('data/feed-record-backup-'+'$RKEY'+'.json'))['value']['avatar']['ref']['\$link'])")
+curl -s "$PDS/xrpc/com.atproto.sync.getBlob?did=$DID&cid=$CID" > data/feed-avatar-$RKEY.bin
+```
+
+Then:
+
+1. Find your feed's record: `https://<your-pds>/xrpc/com.atproto.repo.listRecords?repo=<your-did>&collection=app.bsky.feed.generator`. The rkey is the last URI segment — SkyFeed's are 13-character TIDs rather than readable names. Use it as the feed's key in `data/filters.json`.
+2. Port your SkyFeed blocks: the positive regex block → `includePatterns`, each inverted block → an entry in `excludePatterns`, a `did` input block → `includeDids`, a "remove by list" block → `excludeListUri`, `firehoseSeconds` → `retention`. Copy each block's `target` onto the pattern. Replies and reposts need nothing (dropped automatically / never indexed).
+   **Strip the leading `(?i)`** from SkyFeed patterns — it is Python/Go syntax and a `SyntaxError` in JS under the `u` flag, so the service will not start. The default `iu` flags already make patterns case-insensitive.
+3. Run the stack (steps above, including `setupServiceDid`) and let the database fill for a day — until then SkyFeed keeps serving the feed; there is no downtime window.
+4. Flip the record: `docker compose run --rm feedgen yarn repointFeed <rkey>` — backs up the original to `./data/`, changes only its `did` to your service DID (name, description, avatar, createdAt stay), drops the `skyfeedBuilder` block, and makes you type the rkey before writing.
+5. Verify: `curl "https://public.api.bsky.app/xrpc/app.bsky.feed.getFeedGenerator?feed=at://<did>/app.bsky.feed.generator/<rkey>"` → `"isOnline": true, "isValid": true`, likeCount intact.
+6. Leave the feed alone in SkyFeed. Do not tidy it up.
+
+If the record does get deleted anyway:
+
+```bash
+docker compose run --rm feedgen yarn restoreFeed <rkey>
+```
+
+It recreates the record at the same rkey from `data/feed-record-backup-<rkey>.json`, re-uploads the avatar from `data/feed-avatar-<rkey>.bin`, and points it at your service in the same write. Subscribers' pins and likes live in *their* repos and survive the outage — move fast and most of the audience never notices. Expect feed *search* to take longer to recover than the feed itself.
 
 ## Filters
 
-`data/filters.json`, hot-reloaded. See `filters.example.json` for the shape.
+`data/filters.json`, hot-reloaded. See `filters.example.json` for the shape:
+
+```json
+{ "feeds": { "<rkey>": { …config… }, "<rkey>": { … } } }
+```
+
+Per feed:
 
 | Key | Meaning |
 |---|---|
-| `includePatterns` | post enters the feed if ANY pattern matches **text + image/video alt text** |
-| `excludePatterns` | ...and NO pattern matches **text + alt + links** (external card URL/title/description + link facets) — catches bots whose only stable signal is a link domain |
-| `excludeListUri` | optional `at://` URI of a Bluesky list; members' posts are dropped (refreshed hourly) |
-| `gifPosts`, `quotePosts` | `allow` \| `exclude` \| `only` |
+| `includePatterns` | post enters the feed if ANY pattern matches |
+| `excludePatterns` | ...and NO pattern matches |
+| `includeDids` | author allowlist — a feed of everything one or more accounts post. Works alone (no patterns needed) or together with them |
+| `excludeListUri` | optional `at://` URI of a Bluesky list; members' posts are dropped (refreshed hourly; feeds sharing a list share the fetch) |
+| `gifPosts`, `quotePosts`, `selfLabeledPosts` | `allow` \| `exclude` \| `only` |
+| `retention` | `{"type":"hours","value":72}` or `{"type":"count","value":500}` — how much of this feed is kept |
+| `displayName` | comment only; the name users see lives in the published record |
 
-Each pattern is `{ "pattern": "...", "flags": "iu", "comment": "..." }` (flags optional, default `iu`). Replies and self-labeled posts are always dropped; posts older than 72 h are garbage-collected (`KEEP_HOURS` in `src/subscription.ts`).
+Each pattern is `{ "pattern": "...", "target": "...", "flags": "iu", "comment": "..." }`. `target` picks what the pattern is tested against and mirrors SkyFeed's block targets:
+
+| `target` | Matches against |
+|---|---|
+| `text` | the post text only |
+| `text\|alt_text` | text + image/video alt text — **default for include** |
+| `text\|alt_text\|link` | the above + external card URL/title/description and link facets — **default for exclude**; catches bots whose only stable signal is a link domain |
+
+A feed needs at least one `includePattern` or one `includeDid`; one with neither is refused rather than matched against the whole firehose. Replies are always dropped. A post matching several feeds is stored once per feed, so each feed's retention prunes independently.
+
+Adding or removing a **feed** requires a restart (the routing table is built at startup); editing an existing feed's config is picked up live. The service warns in the log if a hot reload introduces a feed it cannot route.
 
 Test a config without touching the service:
 
 ```bash
 yarn test:filters                      # runs against filters.example.json
+FEEDGEN_FILTERS_PATH=./data/filters.json yarn test:filters   # ...or your real one
+yarn test:gc                           # retention logic, throwaway database
 ```
 
 ## Operations
@@ -102,9 +156,28 @@ docker compose run --rm --no-deps feedgen node -e "
   db.prepare('update sub_state set cursor=?').run(Date.parse('2026-07-29T11:00:00Z')*1000)"
 docker compose start feedgen
 
-# backup
-docker compose stop feedgen && cp data/db.sqlite ~/backup.sqlite && docker compose start feedgen
+# backup, without stopping the service (consistent snapshot of a live SQLite file)
+docker compose exec feedgen node -e "
+  const D=require('better-sqlite3');
+  new D('/data/db.sqlite',{readonly:true}).backup('/data/_bk.sqlite')
+    .then(()=>process.exit(0)).catch(e=>{console.error(e);process.exit(1)})"
+mv data/_bk.sqlite ~/backup.sqlite
 ```
+
+## Upgrading from a single-feed install
+
+Releases before multi-feed support ran one feed named by `FEEDGEN_SHORTNAME`. To upgrade:
+
+1. **Keep `FEEDGEN_SHORTNAME` set to its current value** while you upgrade. Database migration `002` files every existing row under that name, and it is also the key a legacy-shaped `filters.json` is read as. Get it wrong and your posts end up filed under a feed nobody serves.
+2. Rewrite `data/filters.json` into the `{"feeds": {...}}` shape, using that same value as the key. A legacy flat config still loads (with a warning), so this can happen after the upgrade rather than during it.
+3. Rehearse the database migration on a copy before running it for real:
+   ```bash
+   cp data/db.sqlite /tmp/rehearsal.sqlite
+   docker compose run --rm -e FEEDGEN_SQLITE_LOCATION=/data/../tmp/rehearsal.sqlite \
+     feedgen yarn checkMigration
+   ```
+   It prints the resulting schema, the row count per feed, and fails loudly if the row count changed.
+4. `yarn migrateFeed` and `yarn restoreFeed` were replaced by `yarn repointFeed <rkey>` and `yarn restoreFeed <rkey>`, which take the feed as an argument instead of reading `FEEDGEN_SHORTNAME`. The new `restoreFeed` re-uploads the avatar from `data/feed-avatar-<rkey>.bin` rather than reusing the old blob reference — the old reference is dead once a record has been deleted.
 
 ## Credits
 

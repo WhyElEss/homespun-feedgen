@@ -1,21 +1,54 @@
 {
-  "_readme": "Copy to data/filters.json and edit. Hot-reloaded by the running service within ~10s of saving. JS RegExp syntax, default flags 'iu'. Include patterns match post text + image/video alt text; exclude patterns additionally match link URLs (external card + links in text). Toggles gifPosts/quotePosts accept allow | exclude | only. Optional excludeListUri: an at:// URI of a Bluesky moderation list whose members' posts are dropped (refreshed hourly). A broken edit is rejected as a whole: the service keeps the previous config and logs the error (docker logs feedgen).",
-  "includePatterns": [
-    {
-      "comment": "example topic: specialty coffee",
-      "pattern": "\\b(?:pour[- ]?over|espresso|latte art|aeropress|french press|coffee (?:beans?|roasters?|brewing))\\b|#(?:CoffeeCommunity|EspressoTime)\\b"
-    }
-  ],
-  "excludePatterns": [
-    {
-      "comment": "marketplaces and ads",
-      "pattern": "\\b(?:ebay|etsy|amazon|aliexpress)\\b|\\$\\d+\\.\\d{2}|#(?:ad|sponsored|affiliate)\\b"
+  "_readme": "Copy to data/filters.json and edit. This file decides WHICH FEEDS EXIST: every key under 'feeds' is a feed's rkey, which must match the record key you publish it under. It is read at startup to build the routes, then hot-reloaded within ~10s of saving — editing an existing feed takes effect immediately, but adding or removing a feed needs a restart (the service logs a warning if you forget). A broken edit is rejected as a whole: the previous config is kept and the error is logged (docker logs feedgen). Each feed matches by includePatterns, by includeDids, or by both; a feed with neither is refused, since it would match the entire firehose. Patterns are JS RegExp with default flags 'iu' — inline flags like (?i) are Python/Go syntax and a SyntaxError here, so strip them (the 'i' is already applied). Each pattern's 'target' picks what it is tested against: 'text', 'text|alt_text', or 'text|alt_text|link' (link = the external card's url/title/description plus link facets); defaults are text|alt_text for include and text|alt_text|link for exclude. Toggles gifPosts/quotePosts/selfLabeledPosts accept allow | exclude | only. Replies are always dropped. Optional excludeListUri is the at:// URI of a Bluesky moderation list whose members' posts are dropped from that feed (refreshed hourly; several feeds naming the same list share one fetch). retention is {type:'hours'|'count', value:N}, default 72 hours.",
+  "feeds": {
+    "my-feed": {
+      "displayName": "Coffee, unhurried",
+      "includePatterns": [
+        {
+          "comment": "example topic: specialty coffee",
+          "pattern": "\\b(?:pour[- ]?over|espresso|latte art|aeropress|french press|coffee (?:beans?|roasters?|brewing))\\b|#(?:CoffeeCommunity|EspressoTime)\\b"
+        }
+      ],
+      "excludePatterns": [
+        {
+          "comment": "marketplaces and ads",
+          "pattern": "\\b(?:ebay|etsy|amazon|aliexpress)\\b|\\$\\d+\\.\\d{2}|#(?:ad|sponsored|affiliate)\\b"
+        },
+        {
+          "comment": "off-topic homonyms",
+          "pattern": "\\b(?:coffee table books?|coffee shop simulator)\\b"
+        }
+      ],
+      "gifPosts": "allow",
+      "quotePosts": "allow",
+      "selfLabeledPosts": "exclude",
+      "retention": { "type": "hours", "value": 72 }
     },
-    {
-      "comment": "off-topic homonyms",
-      "pattern": "\\b(?:coffee table books?|coffee shop simulator)\\b"
+
+    "my-hashtag-feed": {
+      "displayName": "Latte art only",
+      "includePatterns": [
+        {
+          "comment": "hashtag in the post body only — an image alt reading 'latte art' must not qualify",
+          "pattern": "#LatteArt\\b",
+          "target": "text"
+        }
+      ],
+      "excludePatterns": [
+        {
+          "comment": "keep promos out, including ones that only appear in the link card",
+          "pattern": "\\b(?:discount|coupon|promo code)\\b",
+          "target": "text|alt_text|link"
+        }
+      ],
+      "retention": { "type": "hours", "value": 168 }
+    },
+
+    "my-author-feed": {
+      "displayName": "Everything from one account",
+      "_comment": "No patterns: this feed is every non-reply post by the listed accounts — useful for mirroring a bot or a single author. Keeps the newest 500 posts instead of a time window.",
+      "includeDids": ["did:plc:XXXXXXXXXXXXXXXXXXXXXXXX"],
+      "retention": { "type": "count", "value": 500 }
     }
-  ],
-  "gifPosts": "allow",
-  "quotePosts": "allow"
+  }
 }

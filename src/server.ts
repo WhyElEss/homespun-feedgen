@@ -9,6 +9,8 @@ import { createDb, Database, migrateToLatest } from './db'
 import { JetstreamSubscription } from './subscription'
 import { AppContext, Config } from './config'
 import wellKnown from './well-known'
+import { watchFilters } from './filter'
+import { buildAlgos } from './algos'
 
 export class FeedGenerator {
   public app: express.Application
@@ -32,6 +34,13 @@ export class FeedGenerator {
   static create(cfg: Config) {
     const app = express()
     const db = createDb(cfg.sqliteLocation)
+
+    // Filters define which feeds exist, so they must be loaded before the
+    // routing table is built. Throws on a broken config — failing loudly at
+    // startup beats serving an empty feed.
+    watchFilters()
+    const algos = buildAlgos()
+
     const firehose = new JetstreamSubscription(db, cfg.subscriptionEndpoint)
 
     const didCache = new MemoryCache()
@@ -52,6 +61,7 @@ export class FeedGenerator {
       db,
       didResolver,
       cfg,
+      algos,
     }
     feedGeneration(server, ctx)
     describeGenerator(server, ctx)
