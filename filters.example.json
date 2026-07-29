@@ -1,0 +1,21 @@
+{
+  "_readme": "Copy to data/filters.json and edit. Hot-reloaded by the running service within ~10s of saving. JS RegExp syntax, default flags 'iu'. Include patterns match post text + image/video alt text; exclude patterns additionally match link URLs (external card + links in text). Toggles gifPosts/quotePosts accept allow | exclude | only. Optional excludeListUri: an at:// URI of a Bluesky moderation list whose members' posts are dropped (refreshed hourly). A broken edit is rejected as a whole: the service keeps the previous config and logs the error (docker logs feedgen).",
+  "includePatterns": [
+    {
+      "comment": "example topic: specialty coffee",
+      "pattern": "\\b(?:pour[- ]?over|espresso|latte art|aeropress|french press|coffee (?:beans?|roasters?|brewing))\\b|#(?:CoffeeCommunity|EspressoTime)\\b"
+    }
+  ],
+  "excludePatterns": [
+    {
+      "comment": "marketplaces and ads",
+      "pattern": "\\b(?:ebay|etsy|amazon|aliexpress)\\b|\\$\\d+\\.\\d{2}|#(?:ad|sponsored|affiliate)\\b"
+    },
+    {
+      "comment": "off-topic homonyms",
+      "pattern": "\\b(?:coffee table books?|coffee shop simulator)\\b"
+    }
+  ],
+  "gifPosts": "allow",
+  "quotePosts": "allow"
+}

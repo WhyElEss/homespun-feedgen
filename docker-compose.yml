@@ -1,0 +1,23 @@
+services:
+  feedgen:
+    build: .
+    container_name: feedgen
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      FEEDGEN_LISTENHOST: "0.0.0.0"
+      FEEDGEN_SQLITE_LOCATION: "/data/db.sqlite"
+    volumes:
+      - ./data:/data
+    ports:
+      - "3000:3000"   # optional: LAN debugging
+
+  cloudflared-feedgen:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared-feedgen
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+    depends_on:
+      - feedgen
