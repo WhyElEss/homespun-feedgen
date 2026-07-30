@@ -124,7 +124,11 @@ export class JetstreamSubscription {
       )
       if (feeds.length === 0) return
 
-      const indexedAt = new Date().toISOString()
+      // Stamp with the relay-assigned event time, not the wall clock. This is
+      // the same value the cursor is built from, so a replayed post lands in
+      // its true position instead of on top of the feed. Deliberately NOT
+      // record.createdAt, which the client sets and can therefore forge.
+      const indexedAt = new Date(evt.time_us / 1000).toISOString()
       await this.db
         .insertInto('post')
         .values(

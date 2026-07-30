@@ -149,11 +149,27 @@ docker compose run --rm feedgen yarn whyNot "https://bsky.app/profile/<handle>/p
 docker compose run --rm feedgen node scripts/probeJetstream.js
 
 # retro-capture posts after widening filters: stop, rewind cursor, start —
-# Jetstream replays the window; duplicates are impossible (INSERT ... ON CONFLICT DO NOTHING)
+# Jetstream replays the window; duplicates are impossible (INSERT ... ON CONFLICT DO NOTHING).
+#
+# Three things to know first:
+#  * The cursor belongs to the subscription endpoint, NOT to a feed. Every feed
+#    this instance serves replays together. Rewinding past the point a feed's
+#    own content already reaches backfills that feed with older posts. The
+#    dangerous case is a count-retention feed: the backfill competes with live
+#    posts for the window and can evict them.
+#  * Jetstream's playback buffer is finite (order of a day). A cursor older than
+#    the buffer is NOT honoured — the stream silently starts at the oldest
+#    retained event, so you may backfill far less than you asked for. Verify
+#    what actually landed; the cursor value alone will not tell you.
+#  * Rows carry the event's own timestamp, so replayed posts land in their true
+#    position in the feed rather than on top of it. Rewinding further back than
+#    a feed's retention window therefore achieves nothing.
 docker compose stop feedgen
 docker compose run --rm --no-deps feedgen node -e "
   const db=require('better-sqlite3')('/data/db.sqlite');
-  db.prepare('update sub_state set cursor=?').run(Date.parse('2026-07-29T11:00:00Z')*1000)"
+  db.prepare('update sub_state set cursor=? where service=?')
+    .run(Date.parse('2026-07-29T11:00:00Z')*1000,
+         process.env.FEEDGEN_SUBSCRIPTION_ENDPOINT)"
 docker compose start feedgen
 
 # replace a feed's avatar (name the rkeys, or omit them for every feed that has a logo file)
