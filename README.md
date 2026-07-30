@@ -156,6 +156,10 @@ docker compose run --rm --no-deps feedgen node -e "
   db.prepare('update sub_state set cursor=?').run(Date.parse('2026-07-29T11:00:00Z')*1000)"
 docker compose start feedgen
 
+# replace a feed's avatar (name the rkeys, or omit them for every feed that has a logo file)
+cp new-logo.png data/feed-logo-<rkey>.png
+docker compose run --rm feedgen yarn setFeedAvatar <rkey>
+
 # backup, without stopping the service (consistent snapshot of a live SQLite file)
 docker compose exec feedgen node -e "
   const D=require('better-sqlite3');
@@ -163,6 +167,12 @@ docker compose exec feedgen node -e "
     .then(()=>process.exit(0)).catch(e=>{console.error(e);process.exit(1)})"
 mv data/_bk.sqlite ~/backup.sqlite
 ```
+
+`setFeedAvatar` touches only the record's `avatar` field — name, description, `createdAt` and the AT-URI are carried over, so likes and subscribers are untouched. It validates every image before asking for your password, does the whole set behind one login (email 2FA makes per-feed logins tedious), copies the outgoing record *and* its avatar blob to `data/avatar-backup-<stamp>/`, and then refreshes `data/feed-record-backup-<rkey>.json` and `data/feed-avatar-<rkey>.bin` so `restoreFeed` keeps matching what is actually live. PNG or JPEG, under 1 MB — the lexicon accepts nothing else.
+
+> **If you write your own tooling against records with blobs, read this.** The XRPC client does not hand a record's blob back in wire shape: `record.avatar` comes back as a `BlobRef` whose `.ref` is a `CID` instance, so `record.avatar.ref.$link` is `undefined` — and an optional chain off it evaluates to nothing *without throwing*. Read the CID with `JSON.parse(JSON.stringify(blob)).ref.$link` (or `blob.ref.toString()`). Here that silence cost a real image: the blob-backup step logged no error while writing no file, and the PDS garbage-collected the displaced avatar within minutes of it losing its last reference.
+>
+> A second trap in the same code path: `agent.com.atproto.sync.getBlob` fails against `bsky.social`, which answers with a **302 to the account's real PDS host** that the XRPC client does not follow. Fetch the blob over plain HTTP with redirects enabled instead. Set `PDS_URL` if you are not on `bsky.social`.
 
 ## Upgrading from a single-feed install
 
