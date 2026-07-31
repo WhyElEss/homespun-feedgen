@@ -13,6 +13,7 @@
     "start": "ts-node src/index.ts",
     "build": "tsc",
     "whyNot": "ts-node scripts/whyNot.ts",
+    "purgePosts": "ts-node scripts/purgePosts.ts",
     "test:filters": "FEEDGEN_FILTERS_PATH=./filters.example.json ts-node scripts/testFilter.ts",
     "repointFeed": "ts-node scripts/repointFeed.ts",
     "restoreFeed": "ts-node scripts/restoreFeed.ts",

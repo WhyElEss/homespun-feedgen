@@ -180,6 +180,12 @@ Worth knowing:
 # why is/isn't a post in the feed?
 docker compose run --rm feedgen yarn whyNot "https://bsky.app/profile/<handle>/post/<rkey>"
 
+# clean junk out of a feed (dry run unless you add --apply)
+docker compose run --rm feedgen yarn purgePosts --rejected   # what the current filters would no longer accept
+docker compose run --rm feedgen yarn purgePosts --blocked    # authors now on the moderation list
+docker compose run --rm feedgen yarn purgePosts --author @someone.bsky.social
+docker compose run --rm feedgen yarn purgePosts --uri "https://bsky.app/profile/<handle>/post/<rkey>"
+
 # feed serves stale posts? measure Jetstream instance lag, switch instance in .env
 docker compose run --rm feedgen node scripts/probeJetstream.js
 
@@ -222,6 +228,8 @@ docker compose exec feedgen node -e "
     .then(()=>process.exit(0)).catch(e=>{console.error(e);process.exit(1)})"
 mv data/_bk.sqlite ~/backup.sqlite
 ```
+
+`purgePosts` exists because the service only ever *adds* rows. Tightening a filter stops new junk but leaves what is already indexed; adding someone to the moderation list blocks their future posts but not their past ones. Both cleanups used to mean writing a one-off script — this is that script, kept. `--rejected` replays the live filter over everything stored and removes whatever the current config would no longer accept (narrow it with `--reason <substring>` when you have just edited one pattern and only want its casualties); `--blocked` catches up on moderation-list additions; `--author` and `--uri` are the blunt instruments. Verdicts come from `src/filter.ts`, the same code the service and `whyNot` use, so this cannot drift from what is actually being served. Every mode is a dry run that prints what it found; `--apply` snapshots the database and writes a JSON dump of the deleted rows next to it before touching anything.
 
 `setFeedDescription` is the same idea for the description: it reads the new text from `data/feed-description-<rkey>.txt`, checks it against the lexicon's 300-grapheme / 3000-byte limits *before* asking for a password, backs the record up, shows you a before/after and makes you type the rkey to confirm, then writes with `swapRecord` so a concurrent edit fails the write instead of being silently clobbered. It retries 5xx — the PDS does occasionally return a bare 500 on a payload it has no reason to reject. Note that it changes the description and nothing else: a record update makes the AppView reingest and serve the new text within minutes, but it will **not** move the feed in feed search — ranking there is a separate structure. That was tested; don't reach for this expecting it.
 
