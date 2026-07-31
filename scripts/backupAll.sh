@@ -103,6 +103,31 @@ docker inspect "$(docker compose ps -q "$SERVICE")" > "$OUT/docker/container.jso
 docker image inspect "$(docker compose config --images 2>/dev/null | head -1)" \
   > "$OUT/docker/image.json" 2>/dev/null || true
 
+# Row counts straight from the snapshot, so the file says how fresh it is
+# without anyone having to open the database.
+ACTIVE_ENDPOINT="$(grep -oE '^FEEDGEN_SUBSCRIPTION_ENDPOINT=.*' .env | head -1 | sed 's/^[^=]*=//; s/^"//; s/"$//')"
+STATE="$(python3 - "$OUT/db.sqlite" "$ACTIVE_ENDPOINT" <<'PY'
+import datetime, sqlite3, sys
+try:
+    c = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+    active = sys.argv[2] if len(sys.argv) > 2 else ""
+    print("| feed | rows | newest entry |")
+    print("|---|---|---|")
+    for feed, n, mx in c.execute(
+        "select feed, count(*), max(indexedAt) from post group by feed order by feed"
+    ):
+        print(f"| `{feed}` | {n} | {mx} |")
+    print()
+    # A previous endpoint leaves its row behind; only one of these is live.
+    for svc, cur in c.execute("select service, cursor from sub_state order by cursor desc"):
+        when = datetime.datetime.fromtimestamp(cur / 1e6, datetime.timezone.utc)
+        tag = " **(active)**" if svc == active else " (stale — a previously used endpoint)"
+        print(f"- `{svc}`{tag} at `{when.isoformat().replace('+00:00', 'Z')}`")
+except Exception as e:
+    print(f"(could not read the snapshot: {e})")
+PY
+)"
+
 cat > "$OUT/RESTORE.md" <<EOF
 # feedgen backup — $STAMP
 
@@ -114,6 +139,10 @@ Taken from \`$PROJECT\` while the service was running.
 
 Publisher DID: \`$DID\`
 Feeds: ${RKEYS:-(none)}
+
+## State at capture
+
+$STATE
 
 ## Restore the whole box
 
