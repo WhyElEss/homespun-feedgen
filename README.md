@@ -221,13 +221,20 @@ docker compose run --rm feedgen yarn setFeedAvatar <rkey>
 $EDITOR data/feed-description-<rkey>.txt
 docker compose run --rm feedgen yarn setFeedDescription <rkey>
 
-# backup, without stopping the service (consistent snapshot of a live SQLite file)
+# full backup: database, project (with .env), data/, feed records, PLC document,
+# docker state and a checksum manifest. Service keeps running.
+# NOTE: runs on the host, not inside the container — it drives docker itself.
+bash scripts/backupAll.sh ~/backups
+
+# just the database, without stopping the service (consistent snapshot of a live SQLite file)
 docker compose exec feedgen node -e "
   const D=require('better-sqlite3');
   new D('/data/db.sqlite',{readonly:true}).backup('/data/_bk.sqlite')
     .then(()=>process.exit(0)).catch(e=>{console.error(e);process.exit(1)})"
 mv data/_bk.sqlite ~/backup.sqlite
 ```
+
+`backupAll.sh` takes everything you would need to rebuild the box: the database (through SQLite's own backup API, so the copy is consistent rather than a torn read of a live file), the project tree **including `.env`**, all of `data/` — filters, logos, avatar blobs, record backups — every feed record as currently published, the service DID's PLC document, the resolved docker state, a generated `RESTORE.md` and a `SHA256SUMS` manifest. The service stays up throughout. It picks the first compose service by default; set `FEEDGEN_SERVICE` if yours is ordered differently, and note it needs root for the parts of `data/` the container wrote as root. **The output contains secrets** — `.env` and the expanded compose config — so keep it somewhere private.
 
 `purgePosts` exists because the service only ever *adds* rows. Tightening a filter stops new junk but leaves what is already indexed; adding someone to the moderation list blocks their future posts but not their past ones. Both cleanups used to mean writing a one-off script — this is that script, kept. `--rejected` replays the live filter over everything stored and removes whatever the current config would no longer accept (narrow it with `--reason <substring>` when you have just edited one pattern and only want its casualties); `--blocked` catches up on moderation-list additions; `--author` and `--uri` are the blunt instruments. Verdicts come from `src/filter.ts`, the same code the service and `whyNot` use, so this cannot drift from what is actually being served. Every mode is a dry run that prints what it found; `--apply` snapshots the database and writes a JSON dump of the deleted rows next to it before touching anything.
 
