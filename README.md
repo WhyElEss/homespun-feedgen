@@ -211,6 +211,10 @@ docker compose start feedgen
 cp new-logo.png data/feed-logo-<rkey>.png
 docker compose run --rm feedgen yarn setFeedAvatar <rkey>
 
+# edit a feed's description (everything else on the record is carried over)
+$EDITOR data/feed-description-<rkey>.txt
+docker compose run --rm feedgen yarn setFeedDescription <rkey>
+
 # backup, without stopping the service (consistent snapshot of a live SQLite file)
 docker compose exec feedgen node -e "
   const D=require('better-sqlite3');
@@ -218,6 +222,8 @@ docker compose exec feedgen node -e "
     .then(()=>process.exit(0)).catch(e=>{console.error(e);process.exit(1)})"
 mv data/_bk.sqlite ~/backup.sqlite
 ```
+
+`setFeedDescription` is the same idea for the description: it reads the new text from `data/feed-description-<rkey>.txt`, checks it against the lexicon's 300-grapheme / 3000-byte limits *before* asking for a password, backs the record up, shows you a before/after and makes you type the rkey to confirm, then writes with `swapRecord` so a concurrent edit fails the write instead of being silently clobbered. It retries 5xx — the PDS does occasionally return a bare 500 on a payload it has no reason to reject. Note that it changes the description and nothing else: a record update makes the AppView reingest and serve the new text within minutes, but it will **not** move the feed in feed search — ranking there is a separate structure. That was tested; don't reach for this expecting it.
 
 `setFeedAvatar` touches only the record's `avatar` field — name, description, `createdAt` and the AT-URI are carried over, so likes and subscribers are untouched. It validates every image before asking for your password, does the whole set behind one login (email 2FA makes per-feed logins tedious), copies the outgoing record *and* its avatar blob to `data/avatar-backup-<stamp>/`, and then refreshes `data/feed-record-backup-<rkey>.json` and `data/feed-avatar-<rkey>.bin` so `restoreFeed` keeps matching what is actually live. PNG or JPEG, under 1 MB — the lexicon accepts nothing else.
 

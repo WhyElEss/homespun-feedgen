@@ -17,6 +17,7 @@
     "repointFeed": "ts-node scripts/repointFeed.ts",
     "restoreFeed": "ts-node scripts/restoreFeed.ts",
     "setFeedAvatar": "ts-node scripts/setFeedAvatar.ts",
+    "setFeedDescription": "ts-node scripts/setFeedDescription.ts",
     "checkMigration": "ts-node scripts/checkMigration.ts",
     "test:gc": "ts-node scripts/testGc.ts",
     "test:pinned": "FEEDGEN_FILTERS_PATH=/tmp/pinned-test-filters.json ts-node scripts/testPinned.ts"
