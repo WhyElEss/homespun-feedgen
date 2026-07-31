@@ -116,6 +116,7 @@ Per feed:
 | `includeDids` | author allowlist — a feed of everything one or more accounts post. Works alone (no patterns needed) or together with them |
 | `excludeListUri` | optional `at://` URI of a Bluesky list; members' posts are dropped (refreshed hourly; feeds sharing a list share the fetch) |
 | `gifPosts`, `quotePosts`, `selfLabeledPosts` | `allow` \| `exclude` \| `only` |
+| `pinnedPost` | optional `at://` URI of a post to serve first, with the client's **Pinned** badge — see below |
 | `retention` | `{"type":"hours","value":72}` or `{"type":"count","value":500}` — how much of this feed is kept |
 | `displayName` | comment only; the name users see lives in the published record |
 
@@ -137,7 +138,41 @@ Test a config without touching the service:
 yarn test:filters                      # runs against filters.example.json
 FEEDGEN_FILTERS_PATH=./data/filters.json yarn test:filters   # ...or your real one
 yarn test:gc                           # retention logic, throwaway database
+yarn test:pinned                       # pinned post, throwaway database
 ```
+
+### Pinned post
+
+```json
+"pinnedPost": "at://did:plc:xxxxxxxxxxxxxxxxxxxxxxxx/app.bsky.feed.post/yyyyyyyyyyyyy"
+```
+
+The post is served first on the feed's first page, tagged
+`app.bsky.feed.defs#skeletonReasonPin`, which the AppView turns into
+`#reasonPin` and the client draws as a **Pinned** badge. A welcome post, the
+feed's rules, a link to the contributor list.
+
+Worth knowing:
+
+- **It is a hot-reloaded config value, not code.** The handler reads it per
+  request, so changing or removing the pin takes effect on the next reload
+  (~10s after saving `filters.json`) with no restart and no rebuild.
+- **The post does not have to belong to the feed.** Nothing is validated
+  against the filters, or against the DB — the skeleton just names a URI and
+  the AppView hydrates it. A rules post that no `includePattern` would ever
+  match works fine.
+- **It appears exactly once.** If the post also matches the feed normally, it
+  is suppressed from its chronological position while pinned, and returns
+  there when the field is removed.
+- **The page keeps its size.** With a pin, one fewer row is read from the
+  database, so a `limit=30` request still answers with 30 items. `limit=1` is
+  served without the pin, since the page would otherwise carry no row to build
+  a cursor from.
+- **A dead URI fails silently.** Typos in the shape (a `bsky.app` link, a wrong
+  collection) are rejected on load with an error in the log and the previous
+  config kept. But a well-formed URI pointing at a deleted or blocked post is
+  dropped during hydration: the item just does not appear, and nothing is
+  logged. If a pin does not show up, check the post is still live.
 
 ## Operations
 

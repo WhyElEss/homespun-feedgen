@@ -48,12 +48,18 @@ export type Retention =
 
 const DEFAULT_RETENTION: Retention = { type: 'hours', value: 72 }
 
+// A pinned post is named by its at:// URI. Checked here rather than at request
+// time so a typo is reported on save, in the same reload that would apply it.
+const POST_URI_RE =
+  /^at:\/\/did:[a-z0-9]+:[^/\s]+\/app\.bsky\.feed\.post\/[^/\s]+$/
+
 type RawFeed = {
   displayName?: string
   includePatterns?: RawPattern[]
   excludePatterns?: RawPattern[]
   includeDids?: string[]
   excludeListUri?: string
+  pinnedPost?: string
   gifPosts?: ToggleMode
   quotePosts?: ToggleMode
   selfLabeledPosts?: ToggleMode
@@ -73,6 +79,7 @@ export type FeedConfig = {
   exclude: CompiledPattern[]
   includeDids: Set<string>
   excludeListUri?: string
+  pinnedPost?: string
   gifPosts: ToggleMode
   quotePosts: ToggleMode
   selfLabeledPosts: ToggleMode
@@ -138,6 +145,20 @@ const compileRetention = (
   return { type: value.type, value: value.value }
 }
 
+const compilePinnedPost = (
+  value: string | undefined,
+  where: string,
+): string | undefined => {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || !POST_URI_RE.test(value)) {
+    throw new Error(
+      `${where}.pinnedPost: must be a post URI like ` +
+        `at://did:plc:xxxx/app.bsky.feed.post/yyyy (got ${JSON.stringify(value)})`,
+    )
+  }
+  return value
+}
+
 const compileFeed = (key: string, raw: RawFeed): FeedConfig => {
   const where = `feeds["${key}"]`
   const includeRaw = raw.includePatterns ?? []
@@ -175,6 +196,7 @@ const compileFeed = (key: string, raw: RawFeed): FeedConfig => {
     ),
     includeDids: new Set(didsRaw),
     excludeListUri: raw.excludeListUri,
+    pinnedPost: compilePinnedPost(raw.pinnedPost, where),
     gifPosts: compileToggle(raw.gifPosts, `${where}.gifPosts`, 'allow'),
     quotePosts: compileToggle(raw.quotePosts, `${where}.quotePosts`, 'allow'),
     // Defaults to exclude: that is what this service has always done, and
@@ -246,7 +268,8 @@ export const loadFilters = (): void => {
         `${cfg.include.length} include / ${cfg.exclude.length} exclude patterns, ` +
         `${cfg.includeDids.size} author DIDs, ` +
         `retention ${cfg.retention.value} ${cfg.retention.type}` +
-        (cfg.excludeListUri ? ', + exclude list' : ''),
+        (cfg.excludeListUri ? ', + exclude list' : '') +
+        (cfg.pinnedPost ? `, pinned ${cfg.pinnedPost}` : ''),
     )
   }
 }

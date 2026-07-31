@@ -18,7 +18,8 @@
     "restoreFeed": "ts-node scripts/restoreFeed.ts",
     "setFeedAvatar": "ts-node scripts/setFeedAvatar.ts",
     "checkMigration": "ts-node scripts/checkMigration.ts",
-    "test:gc": "ts-node scripts/testGc.ts"
+    "test:gc": "ts-node scripts/testGc.ts",
+    "test:pinned": "FEEDGEN_FILTERS_PATH=/tmp/pinned-test-filters.json ts-node scripts/testPinned.ts"
   },
   "dependencies": {
     "@atproto/api": "^0.13.28",
