@@ -235,7 +235,9 @@ const run = async () => {
     return
   }
 
-  const stamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15)
+  // Second precision on purpose: two purges a minute apart — say --rejected
+  // then --blocked — must not overwrite each other's dump and database backup.
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')
   const dir = DB_PATH.replace(/\/[^/]+$/, '')
   fs.copyFileSync(DB_PATH, `${dir}/db-backup-purge-${stamp}.sqlite`)
   fs.writeFileSync(`${dir}/purged-${stamp}.json`, JSON.stringify(doomed, null, 2))
