@@ -23,13 +23,28 @@ cd "$PROJECT"
 
 # Default to the first service in the compose file — that is the feedgen itself
 # in every layout shipped here; override when yours is ordered differently.
-SERVICE="${FEEDGEN_SERVICE:-$(docker compose config --services 2>/dev/null | head -1)}"
-if ! docker compose config --services 2>/dev/null | grep -qx "$SERVICE"; then
-  echo "No compose service named '$SERVICE'. Available:" >&2
-  docker compose config --services 2>/dev/null | sed 's/^/  /' >&2
-  echo "Set FEEDGEN_SERVICE=<name> and re-run." >&2
+#
+# Read the list once into a variable instead of piping it. Under `pipefail`, a
+# consumer that stops reading early (`head -1`, `grep -q`) kills the upstream
+# `docker compose` with SIGPIPE, and the pipeline then reports 141 even though
+# the match succeeded. That surfaces as a bogus "no compose service named ..."
+# on slower machines, where compose is still writing when the consumer is done.
+SERVICES="$(docker compose config --services 2>/dev/null || true)"
+SERVICE="${FEEDGEN_SERVICE:-${SERVICES%%$'\n'*}}"
+if [ -z "$SERVICE" ]; then
+  echo "No compose services found in $PROJECT." >&2
+  echo "Run this from a project with a docker-compose.yml." >&2
   exit 1
 fi
+case $'\n'"$SERVICES"$'\n' in
+  *$'\n'"$SERVICE"$'\n'*) ;;
+  *)
+    echo "No compose service named '$SERVICE'. Available:" >&2
+    echo "$SERVICES" | sed 's/^/  /' >&2
+    echo "Set FEEDGEN_SERVICE=<name> and re-run." >&2
+    exit 1
+    ;;
+esac
 
 [ -f .env ] || { echo ".env not found in $PROJECT" >&2; exit 1; }
 DID="$(grep -oE '^FEEDGEN_PUBLISHER_DID=.*' .env | head -1 | sed 's/^[^=]*=//; s/^"//; s/"$//')"
@@ -100,7 +115,8 @@ curl -sS --fail "https://plc.directory/$DID" -o "$OUT/plc.json" || echo "    PLC
 echo "==> docker state"
 docker compose config > "$OUT/docker/compose-resolved.yml" 2>/dev/null || true
 docker inspect "$(docker compose ps -q "$SERVICE")" > "$OUT/docker/container.json" 2>/dev/null || true
-docker image inspect "$(docker compose config --images 2>/dev/null | head -1)" \
+IMAGES="$(docker compose config --images 2>/dev/null || true)"   # see the SIGPIPE note above
+docker image inspect "${IMAGES%%$'\n'*}" \
   > "$OUT/docker/image.json" 2>/dev/null || true
 
 # Row counts straight from the snapshot, so the file says how fresh it is
