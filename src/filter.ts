@@ -238,6 +238,16 @@ const compile = (raw: RawFilters): Map<string, FeedConfig> => {
   return out
 }
 
+// Check a candidate config without touching the live one. Everything that
+// validates a filters.json already lives in compile(); the only way to reach it
+// used to be loadFilters(), which reads a fixed path AND installs the result —
+// so the only way to find out whether an edit was valid was to write it to disk
+// and watch the log. Anything editing the config from outside (an admin UI, a
+// pre-commit check) wants to ask first. Throws the same path-qualified errors,
+// e.g. `feeds["abc"].includePatterns[2]: invalid regex`.
+export const validateFilters = (raw: unknown): Map<string, FeedConfig> =>
+  compile(raw as RawFilters)
+
 export const loadFilters = (): void => {
   const raw = JSON.parse(fs.readFileSync(FILTERS_PATH, 'utf8')) as RawFilters
   const compiled = compile(raw)
