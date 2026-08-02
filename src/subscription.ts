@@ -42,8 +42,10 @@ const GC_INTERVAL_MS = 60 * 60 * 1000
 export class JetstreamSubscription {
   private ws?: WebSocket
   private cursor?: number
-  // feed key -> DIDs muted for that feed by its moderation list
-  private excludedDids = new Map<string, Set<string>>()
+  // feed key -> DIDs muted for that feed by its moderation list.
+  // Not private: the ingest path is the least covered code here and the most
+  // consequential, so the tests drive it directly rather than through a socket.
+  excludedDids = new Map<string, Set<string>>()
 
   constructor(public db: Database, public service: string) {}
 
@@ -99,7 +101,8 @@ export class JetstreamSubscription {
     })
   }
 
-  private async handleMessage(raw: string) {
+  // Public for the same reason as excludedDids above: testable end to end.
+  async handleMessage(raw: string) {
     const evt = JSON.parse(raw) as JetstreamEvent
     this.cursor = evt.time_us
 

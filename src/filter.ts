@@ -248,6 +248,22 @@ const compile = (raw: RawFilters): Map<string, FeedConfig> => {
 export const validateFilters = (raw: unknown): Map<string, FeedConfig> =>
   compile(raw as RawFilters)
 
+// Persist a config safely. Two properties matter to anything that writes this
+// file from outside:
+//   * it is validated first, so a config the service could not load never
+//     reaches disk;
+//   * it is written to a temporary file in the same directory and renamed,
+//     which is atomic on POSIX — the watcher (and any concurrent reader) sees
+//     either the old file or the new one, never a half-written one.
+// Editing by hand is forgiving because a torn read merely fails the reload and
+// the previous config is kept; a UI saving on every keystroke is not.
+export const writeFilters = (raw: unknown, path: string = FILTERS_PATH): void => {
+  validateFilters(raw)
+  const tmp = `${path}.tmp-${process.pid}`
+  fs.writeFileSync(tmp, JSON.stringify(raw, null, 2) + '\n')
+  fs.renameSync(tmp, path)
+}
+
 export const loadFilters = (): void => {
   const raw = JSON.parse(fs.readFileSync(FILTERS_PATH, 'utf8')) as RawFilters
   const compiled = compile(raw)

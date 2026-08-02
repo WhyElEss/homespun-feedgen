@@ -11,10 +11,12 @@ import { AppContext, Config } from './config'
 import wellKnown from './well-known'
 import { watchFilters } from './filter'
 import { buildAlgos } from './algos'
+import { startAdminServer } from './admin'
 
 export class FeedGenerator {
   public app: express.Application
   public server?: http.Server
+  public adminServer?: http.Server
   public db: Database
   public firehose: JetstreamSubscription
   public cfg: Config
@@ -76,6 +78,9 @@ export class FeedGenerator {
     this.firehose.run(this.cfg.subscriptionReconnectDelay)
     this.server = this.app.listen(this.cfg.port, this.cfg.listenhost)
     await events.once(this.server, 'listening')
+    // Separate listener, off unless FEEDGEN_ADMIN_PORT is set. Never routed
+    // through the tunnel — see src/admin.ts.
+    this.adminServer = await startAdminServer()
     return this.server
   }
 }
