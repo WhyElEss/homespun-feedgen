@@ -180,6 +180,10 @@ Worth knowing:
 # why is/isn't a post in the feed?
 docker compose run --rm feedgen yarn whyNot "https://bsky.app/profile/<handle>/post/<rkey>"
 
+# run the cleanup automatically whenever filters or the moderation list change
+# (host cron, every 5 min; see the notes below before enabling)
+*/5 * * * * NTFY_TOPIC=your-topic /bin/bash /path/to/cron-tasks/auto-purge.sh
+
 # clean junk out of a feed (dry run unless you add --apply)
 docker compose run --rm feedgen yarn purgePosts --rejected   # what the current filters would no longer accept
 docker compose run --rm feedgen yarn purgePosts --blocked    # authors now on the moderation list
@@ -235,6 +239,10 @@ mv data/_bk.sqlite ~/backup.sqlite
 ```
 
 `backupAll.sh` takes everything you would need to rebuild the box: the database (through SQLite's own backup API, so the copy is consistent rather than a torn read of a live file), the project tree **including `.env`**, all of `data/` — filters, logos, avatar blobs, record backups — every feed record as currently published, the service DID's PLC document, the resolved docker state, a generated `RESTORE.md` and a `SHA256SUMS` manifest. The service stays up throughout. It picks the first compose service by default; set `FEEDGEN_SERVICE` if yours is ordered differently, and note it needs root for the parts of `data/` the container wrote as root. **The output contains secrets** — `.env` and the expanded compose config — so keep it somewhere private.
+
+`auto-purge.sh` runs that cleanup for you. It watches the two things that decide what belongs in a feed — the hash of `data/filters.json`, and a hash of the DID set the moderation list actually hydrates — and when one changes it runs *only the mode that change implies*: an edited filter triggers `--rejected`, a new blocklist entry triggers `--blocked`. That split matters, because `--rejected` re-hydrates every stored post from the AppView and has no business running just because you blocked somebody. The hash checks are cheap and run on the host; a container only starts when something really changed.
+
+**The safety limit is the point of the design.** A valid-but-wrong regex — a `.` you meant to escape, a lost anchor — passes hot-reload validation and would quietly empty the feed. So every trigger runs a dry run first, and applies only if the count is under both an absolute cap (`AUTO_PURGE_MAX_ABS`, default 25) and a proportional one (`AUTO_PURGE_MAX_PCT`, default 5% of stored rows), whichever is smaller. Over that, nothing is deleted: the run is recorded in `auto-purge.withheld` and a notification goes out for a human to look. Set `NTFY_TOPIC` to get those pushes ([ntfy.sh](https://ntfy.sh)); leave it unset and it only logs. Keep messages short — an ntfy topic is readable by anyone who knows its name. Run it on each box independently; there is no cross-machine ordering to get wrong.
 
 `purgePosts` exists because the service only ever *adds* rows. Tightening a filter stops new junk but leaves what is already indexed; adding someone to the moderation list blocks their future posts but not their past ones. Both cleanups used to mean writing a one-off script — this is that script, kept. `--rejected` replays the live filter over everything stored and removes whatever the current config would no longer accept (narrow it with `--reason <substring>` when you have just edited one pattern and only want its casualties); `--blocked` catches up on moderation-list additions; `--author` and `--uri` are the blunt instruments. Verdicts come from `src/filter.ts`, the same code the service and `whyNot` use, so this cannot drift from what is actually being served. Every mode is a dry run that prints what it found; `--apply` snapshots the database and writes a JSON dump of the deleted rows next to it before touching anything.
 

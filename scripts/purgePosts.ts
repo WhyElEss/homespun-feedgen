@@ -119,7 +119,7 @@ const run = async () => {
   if (modes.length !== 1) {
     console.error(
       'usage: purgePosts.ts (--author <handle|did> | --uri <url> ... | --rejected [--reason <s>] | --blocked)\n' +
-        '                    [--feed <rkey>] [--apply]',
+        '                    [--feed <rkey>] [--apply] [--json]',
     )
     process.exit(2)
   }
@@ -136,11 +136,13 @@ const run = async () => {
 
   const doomed: Doomed[] = []
   const notes: string[] = []
+  let stored = 0 // rows in scope, so a caller can judge a count as a proportion
 
   for (const cfg of feeds) {
     const rows = db
       .prepare('select uri, indexedAt, feed from post where feed = ?')
       .all(cfg.key) as Row[]
+    stored += rows.length
     if (!rows.length) continue
 
     if (mode === 'author' || mode === 'uri') {
@@ -212,26 +214,54 @@ const run = async () => {
     }
   }
 
-  const feedList = feeds.map((f) => f.key).join(', ')
-  console.log(`mode: --${mode}${arg('reason') ? ` --reason ${arg('reason')}` : ''}  |  feeds: ${feedList}`)
-  console.log(`to delete: ${doomed.length}\n`)
-  const byFeed = new Map<string, Doomed[]>()
-  for (const d of doomed) byFeed.set(d.feed, [...(byFeed.get(d.feed) ?? []), d])
-  for (const [feed, ds] of byFeed) {
-    console.log(`  ${feed} (${ds.length})`)
-    for (const d of ds) console.log(`     @${d.handle} [${d.why}] ${d.text}`)
-  }
-  if (notes.length) {
-    console.log('\nnotes:')
-    notes.forEach((n) => console.log(`  ${n}`))
+  // --json makes this usable from a script: one object on stdout, nothing else.
+  // `stored` is there so a caller can apply a proportional safety limit rather
+  // than only an absolute one.
+  const jsonOut = has('json')
+  const emitJson = (applied: boolean, dump: string | null) =>
+    console.log(
+      JSON.stringify({
+        mode,
+        reason: arg('reason') ?? null,
+        feeds: feeds.map((f) => f.key),
+        stored,
+        count: doomed.length,
+        applied,
+        dump,
+        rows: doomed.map((d) => ({
+          feed: d.feed,
+          uri: d.uri,
+          handle: d.handle,
+          why: d.why,
+        })),
+        notes,
+      }),
+    )
+
+  if (!jsonOut) {
+    const feedList = feeds.map((f) => f.key).join(', ')
+    console.log(`mode: --${mode}${arg('reason') ? ` --reason ${arg('reason')}` : ''}  |  feeds: ${feedList}`)
+    console.log(`to delete: ${doomed.length}\n`)
+    const byFeed = new Map<string, Doomed[]>()
+    for (const d of doomed) byFeed.set(d.feed, [...(byFeed.get(d.feed) ?? []), d])
+    for (const [feed, ds] of byFeed) {
+      console.log(`  ${feed} (${ds.length})`)
+      for (const d of ds) console.log(`     @${d.handle} [${d.why}] ${d.text}`)
+    }
+    if (notes.length) {
+      console.log('\nnotes:')
+      notes.forEach((n) => console.log(`  ${n}`))
+    }
   }
 
   if (!doomed.length) {
-    console.log('\nnothing to do')
+    if (jsonOut) emitJson(false, null)
+    else console.log('\nnothing to do')
     return
   }
   if (!apply) {
-    console.log('\ndry run — re-run with --apply to delete')
+    if (jsonOut) emitJson(false, null)
+    else console.log('\ndry run — re-run with --apply to delete')
     return
   }
 
@@ -244,6 +274,11 @@ const run = async () => {
 
   const del = db.prepare('delete from post where feed = ? and uri = ?')
   db.transaction((l: Doomed[]) => l.forEach((d) => del.run(d.feed, d.uri)))(doomed)
+
+  if (jsonOut) {
+    emitJson(true, `${dir}/purged-${stamp}.json`)
+    return
+  }
 
   console.log(`\ndeleted ${doomed.length}`)
   console.log(`  db backup: ${dir}/db-backup-purge-${stamp}.sqlite`)
