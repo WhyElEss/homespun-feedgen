@@ -1,9 +1,10 @@
 import fs from 'node:fs'
+import path from 'node:path'
 import http from 'http'
 import express from 'express'
-import { validateFilters } from './filter'
+import { validateFilters, writeFilters } from './filter'
 import { AdminAuth } from './adminAuth'
-import { StatusSnapshot } from './adminStatus'
+import { StatusSnapshot, shortDigest } from './adminStatus'
 import { ADMIN_PAGE } from './adminPage'
 
 // The admin surface: a config side channel, a status view, and the UI that
@@ -48,6 +49,34 @@ export type AdminRouterOptions = {
   status?: () => Promise<StatusSnapshot>
   // Serve the HTML page at the mount root.
   page?: boolean
+  // Enables PUT /filters. False on a standby: its config is overwritten by the
+  // primary every 10 minutes, so an edit there is not a risk, it is a lie.
+  writable?: boolean
+  // When present, POST /lab/measure is served from it.
+  lab?: (feed: string, filters: unknown, refresh: boolean) => Promise<unknown>
+}
+
+// Kept next to the config, so a restore of data/ carries the history with it.
+const BACKUP_DIR = 'filters-backups'
+const KEEP_BACKUPS = 50
+
+// The service can hot-reload a broken-in-spirit config in ~10 s and auto-purge
+// can act on it within 5 minutes, so the previous file is the realistic undo.
+// writeFilters() is atomic but keeps no history of its own.
+const backupCurrent = (file: string, stamp: string): string | null => {
+  if (!fs.existsSync(file)) return null
+  const dir = path.join(path.dirname(file), BACKUP_DIR)
+  fs.mkdirSync(dir, { recursive: true })
+  const dest = path.join(dir, `filters.json.${stamp}`)
+  fs.copyFileSync(file, dest)
+  const kept = fs
+    .readdirSync(dir)
+    .filter((f) => f.startsWith('filters.json.'))
+    .sort()
+  for (const old of kept.slice(0, Math.max(0, kept.length - KEEP_BACKUPS))) {
+    fs.rmSync(path.join(dir, old), { force: true })
+  }
+  return dest
 }
 
 // The page loads no external resource of any kind, so the policy can say so.
@@ -108,12 +137,103 @@ export const createAdminRouter = (opts: AdminRouterOptions = {}): express.Router
 
   router.get('/filters', guard, (_req, res) => {
     try {
-      const raw = JSON.parse(fs.readFileSync(filtersPath(), 'utf8'))
-      res.json({ ok: true, filters: raw })
+      const buf = fs.readFileSync(filtersPath())
+      res.json({
+        ok: true,
+        filters: JSON.parse(buf.toString('utf8')),
+        // The client sends this back on save. It is how a second editor, a hand
+        // edit over ssh, or the standby sync gets noticed instead of clobbered.
+        digest: shortDigest(buf),
+        writable: opts.writable === true,
+      })
     } catch (err: any) {
       res.status(500).json({ ok: false, error: String(err?.message ?? err) })
     }
   })
+
+  router.put('/filters', guard, (req, res) => {
+    if (!opts.writable) {
+      res.status(403).json({
+        ok: false,
+        error:
+          'this box is read-only. On a standby the config is replaced by the ' +
+          'primary every 10 minutes, so an edit here would be silently undone — ' +
+          'edit on the primary instead.',
+      })
+      return
+    }
+    const body: any = req.body ?? {}
+    const file = filtersPath()
+    try {
+      const currentBuf = fs.readFileSync(file)
+      const currentDigest = shortDigest(currentBuf)
+      if (body.expectedDigest !== currentDigest) {
+        res.status(409).json({
+          ok: false,
+          error:
+            'the config on disk changed since it was loaded — reload before ' +
+            'saving, or your edit would drop whatever changed in between.',
+          expected: body.expectedDigest ?? null,
+          actual: currentDigest,
+        })
+        return
+      }
+
+      const compiled = validateFilters(body.filters)
+      const current = JSON.parse(currentBuf.toString('utf8'))
+      const before = Object.keys(current?.feeds ?? {}).sort().join(',')
+      const after = [...compiled.keys()].sort().join(',')
+      if (before !== after) {
+        // buildAlgos() reads the config once, at startup, so a feed added here
+        // would be configured but not routed, and one removed would still be
+        // routed while matching nothing. filter.ts only warns about that in the
+        // log — a UI should refuse rather than produce it.
+        res.status(400).json({
+          ok: false,
+          error:
+            'adding or removing a feed needs a service restart, because the ' +
+            'routing table is built at startup. Edit the file on the box and ' +
+            'restart instead.',
+          before,
+          after,
+        })
+        return
+      }
+
+      const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, 'Z')
+      const backup = backupCurrent(file, stamp)
+      writeFilters(body.filters, file)
+      const newDigest = shortDigest(fs.readFileSync(file))
+      console.log(`admin: filters saved (digest ${currentDigest} -> ${newDigest})`)
+      res.json({
+        ok: true,
+        digest: newDigest,
+        backup,
+        note:
+          'The service reloads within ~10s. Any change to this file also makes ' +
+          'auto-purge replay the filter over stored posts within 5 minutes, and ' +
+          'the standby picks the file up within 10.',
+      })
+    } catch (err: any) {
+      res.status(400).json({ ok: false, error: String(err?.message ?? err) })
+    }
+  })
+
+  if (opts.lab) {
+    const lab = opts.lab
+    router.post('/lab/measure', guard, async (req, res) => {
+      const body: any = req.body ?? {}
+      if (typeof body.feed !== 'string' || !body.feed) {
+        res.status(400).json({ ok: false, error: 'feed is required' })
+        return
+      }
+      try {
+        res.json({ ok: true, result: await lab(body.feed, body.filters, body.refresh === true) })
+      } catch (err: any) {
+        res.status(400).json({ ok: false, error: String(err?.message ?? err) })
+      }
+    })
+  }
 
   // Compiling a candidate is cheap and side-effect free: compilePattern only
   // builds the RegExp, it never runs it, so a pathological pattern cannot burn

@@ -83,6 +83,23 @@ export const ADMIN_PAGE = `<!doctype html>
   .muted { color: var(--muted); }
   .small { font-size: .82rem; }
   footer { margin-top: 2.5rem; color: var(--muted); font-size: .8rem; }
+  textarea {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .82rem;
+    width: 100%; min-height: 24rem; padding: .7rem; border-radius: 8px; tab-size: 2;
+    border: 1px solid var(--line); background: var(--bg); color: var(--fg);
+    line-height: 1.45; resize: vertical;
+  }
+  select { font: inherit; padding: .4rem .5rem; border-radius: 7px;
+           border: 1px solid var(--line); background: var(--card); color: var(--fg); }
+  .toolbar { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap;
+             margin-top: .7rem; }
+  .toolbar .spacer { flex: 1; }
+  .msg { margin-top: .7rem; font-size: .85rem; white-space: pre-wrap; }
+  .msg.ok { color: var(--ok); } .msg.bad { color: var(--bad); } .msg.warn { color: var(--warn); }
+  .big { font-size: 1.6rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stat { text-align: center; padding: .8rem .5rem; }
+  .stat .lbl { color: var(--muted); font-size: .75rem; text-transform: uppercase;
+               letter-spacing: .05em; }
 </style>
 </head>
 <body>
@@ -112,13 +129,21 @@ export const ADMIN_PAGE = `<!doctype html>
   // resolve to /api/... in the first case. Anchor every call to the mount point.
   var base = location.pathname.replace(/\\/+$/, '') + '/';
 
-  function api(path, body) {
-    return fetch(base + 'api/' + path, {
-      method: body ? 'POST' : 'GET',
-      headers: body ? { 'content-type': 'application/json' } : {},
-      body: body ? JSON.stringify(body) : undefined,
+  // call() takes a path relative to the mount point; api() is the same thing for
+  // the /api/* group. Both spell the base out rather than relying on the browser
+  // to collapse a '..' — the page has to work at /admin and at /admin/ alike.
+  function call(path, init) {
+    init = init || {};
+    var hasBody = init.body !== undefined;
+    return fetch(base + path, {
+      method: init.method || (hasBody ? 'POST' : 'GET'),
+      headers: hasBody ? { 'content-type': 'application/json' } : {},
+      body: hasBody ? JSON.stringify(init.body) : undefined,
       credentials: 'same-origin'
     });
+  }
+  function api(path, body) {
+    return call('api/' + path, body === undefined ? {} : { body: body });
   }
   function ago(sec) {
     if (sec == null) return '—';
@@ -287,9 +312,174 @@ export const ADMIN_PAGE = `<!doctype html>
       kv('Size', s.filters.sizeBytes == null ? '—' : s.filters.sizeBytes + ' B')
     ])]));
 
+    renderConfigEditor(s);
+
     app.appendChild(h('footer', {
-      text: 'Read-only view. Generated ' + s.generatedAt.replace('T', ' ').slice(0, 19) + 'Z'
+      text: 'Generated ' + s.generatedAt.replace('T', ' ').slice(0, 19) + 'Z'
     }));
+  }
+
+  // ── the config editor, and the lab that measures an edit before it is saved
+  function renderConfigEditor(s) {
+    var editing = null;   // the config as loaded, plus its digest
+    var box = h('div', { class: 'card pad' }, []);
+    app.appendChild(h('h2', { text: 'Filters' }));
+    app.appendChild(box);
+
+    var area = h('textarea', { spellcheck: 'false', 'aria-label': 'filters.json' });
+    var msg = h('div', { class: 'msg' });
+    var feedSel = h('select', { 'aria-label': 'Feed to measure' });
+    var results = h('div', {}, []);
+
+    var btnValidate = h('button', { text: 'Validate' });
+    var btnMeasure = h('button', { text: 'Measure this edit' });
+    var btnSave = h('button', { class: 'primary', text: 'Save' });
+    var btnReload = h('button', { text: 'Reload' });
+
+    function say(text, cls) { msg.className = 'msg ' + (cls || ''); msg.textContent = text; }
+    function busy(on) {
+      [btnValidate, btnMeasure, btnSave, btnReload].forEach(function (b) { b.disabled = on; });
+    }
+    function parsed() {
+      try { return { value: JSON.parse(area.value) }; }
+      catch (e) { return { error: 'Not valid JSON: ' + e.message }; }
+    }
+
+    function load() {
+      busy(true); say('Loading…');
+      call('filters').then(function (r) { return r.json(); }).then(function (b) {
+        busy(false);
+        if (!b.ok) { say(b.error || 'Could not load the config', 'bad'); return; }
+        editing = { digest: b.digest, writable: b.writable };
+        area.value = JSON.stringify(b.filters, null, 2);
+        feedSel.innerHTML = '';
+        (s.feeds || []).filter(function (f) { return f.routed; }).forEach(function (f) {
+          feedSel.appendChild(h('option', { value: f.key,
+            text: (f.displayName || f.key) + ' — ' + f.rows + ' posts' }));
+        });
+        btnSave.disabled = !b.writable;
+        say('Loaded, digest ' + b.digest + (b.writable ? '' : ' — this box is read-only'),
+            b.writable ? '' : 'warn');
+      }).catch(function (e) { busy(false); say('Network error: ' + e.message, 'bad'); });
+    }
+
+    btnReload.addEventListener('click', load);
+
+    btnValidate.addEventListener('click', function () {
+      var p = parsed();
+      if (p.error) { say(p.error, 'bad'); return; }
+      busy(true); say('Validating…');
+      call('filters/validate', { body: p.value }).then(function (r) {
+        return r.json().then(function (b) { return { status: r.status, body: b }; });
+      }).then(function (res) {
+        busy(false);
+        if (res.status === 200) {
+          say('Valid. ' + res.body.feeds.map(function (f) {
+            return f.key + ': ' + f.includePatterns + ' inc / ' + f.excludePatterns + ' exc';
+          }).join('\\n'), 'ok');
+        } else { say(res.body.error, 'bad'); }
+      }).catch(function (e) { busy(false); say('Network error: ' + e.message, 'bad'); });
+    });
+
+    btnMeasure.addEventListener('click', function () {
+      var p = parsed();
+      if (p.error) { say(p.error, 'bad'); return; }
+      busy(true); results.innerHTML = '';
+      say('Measuring against stored posts — the first run for a feed fetches them ' +
+          'from the AppView and can take a while…');
+      api('lab/measure', { feed: feedSel.value, filters: p.value }).then(function (r) {
+        return r.json().then(function (b) { return { status: r.status, body: b }; });
+      }).then(function (res) {
+        busy(false);
+        if (res.status !== 200) { say(res.body.error, 'bad'); return; }
+        say('');
+        renderLab(res.body.result);
+      }).catch(function (e) { busy(false); say('Network error: ' + e.message, 'bad'); });
+    });
+
+    btnSave.addEventListener('click', function () {
+      var p = parsed();
+      if (p.error) { say(p.error, 'bad'); return; }
+      if (!confirm('Save this config? It goes live within ~10 seconds, and ' +
+                   'auto-purge will replay it over stored posts within 5 minutes.')) return;
+      busy(true); say('Saving…');
+      call('filters', { method: 'PUT',
+        body: { filters: p.value, expectedDigest: editing && editing.digest }
+      }).then(function (r) {
+        return r.json().then(function (b) { return { status: r.status, body: b }; });
+      }).then(function (res) {
+        busy(false);
+        if (res.status !== 200) { say(res.body.error, 'bad'); return; }
+        editing.digest = res.body.digest;
+        say('Saved. New digest ' + res.body.digest + '\\n' + res.body.note, 'ok');
+      }).catch(function (e) { busy(false); say('Network error: ' + e.message, 'bad'); });
+    });
+
+    function renderLab(r) {
+      results.innerHTML = '';
+      var cls = r.removed === 0 ? 'ok' : r.wouldExceedAutoPurgeCap ? 'bad' : 'warn';
+      results.appendChild(h('div', { class: 'grid' }, [
+        h('div', { class: 'card stat' }, [
+          h('div', { class: 'big', text: String(r.removed) }),
+          h('div', { class: 'lbl', text: 'posts would be removed' })]),
+        h('div', { class: 'card stat' }, [
+          h('div', { class: 'big', text: r.removedPct + '%' }),
+          h('div', { class: 'lbl', text: 'of ' + r.stored + ' stored' })]),
+        h('div', { class: 'card stat' }, [
+          h('div', { class: 'big', text: String(r.keptAfter) }),
+          h('div', { class: 'lbl', text: 'would remain (now ' + r.keptNow + ')' })])
+      ]));
+
+      if (r.wouldExceedAutoPurgeCap) {
+        results.appendChild(h('p', { class: 'msg bad', text:
+          'This is over the auto-purge safety cap (25 posts or 5%). The cleanup ' +
+          'would REFUSE to apply it and log the refusal instead, so the posts ' +
+          'would sit in the feed until someone looks. That cap exists for exactly ' +
+          'this shape of edit — check the samples below before saving.' }));
+      }
+      if (r.unretrievable) {
+        results.appendChild(h('p', { class: 'msg warn', text:
+          r.unretrievable + ' stored row(s) could not be fetched from the AppView ' +
+          '(deleted upstream) and were not measured.' }));
+      }
+      results.appendChild(h('p', { class: 'small muted', text: r.note +
+        ' Corpus fetched ' + since(r.cachedAt) + '.' }));
+
+      if (r.samples.length) {
+        var rows = r.samples.map(function (x) {
+          return h('tr', {}, [
+            h('td', { class: 'small', text: '@' + x.handle }),
+            h('td', { class: 'small', text: x.text || '(no text)' }),
+            h('td', { class: 'small muted', text: x.reason })
+          ]);
+        });
+        results.appendChild(h('div', { class: 'card wrap' }, [
+          h('table', {}, [
+            h('thead', {}, [h('tr', {}, [
+              h('th', { text: 'Author' }), h('th', { text: 'Text' }),
+              h('th', { text: 'Why it would go' })])]),
+            h('tbody', {}, rows)])]));
+        if (r.removed > r.samples.length) {
+          results.appendChild(h('p', { class: 'small muted',
+            text: 'Showing the first ' + r.samples.length + ' of ' + r.removed + '.' }));
+        }
+      }
+    }
+
+    box.appendChild(h('p', { class: 'small muted', text:
+      'Edits to existing feeds only — adding or removing a feed needs a restart, ' +
+      'because the routing table is built at startup. Measure before you save: it ' +
+      'replays the candidate over the posts this feed already holds and shows what ' +
+      'would be purged. It cannot show what a WIDENED include would let in, since ' +
+      'those posts were never stored.' }));
+    box.appendChild(area);
+    box.appendChild(h('div', { class: 'toolbar' }, [
+      btnValidate, feedSel, btnMeasure,
+      h('span', { class: 'spacer' }, []), btnReload, btnSave
+    ]));
+    box.appendChild(msg);
+    box.appendChild(results);
+    load();
   }
 
   var timer = null;

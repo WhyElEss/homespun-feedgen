@@ -14,6 +14,7 @@ import { buildAlgos } from './algos'
 import { createAdminRouter, startAdminServer } from './admin'
 import { createAdminAuth, looksLikeHash } from './adminAuth'
 import { collectStatus } from './adminStatus'
+import { measureCandidate } from './adminLab'
 
 // The admin UI on the PUBLIC app. Off unless FEEDGEN_ADMIN_UI=on, because this
 // app is what the Cloudflare tunnel points at — an install that does not ask
@@ -48,8 +49,9 @@ const mountAdminUi = (
     )
   }
 
-  // Today this only labels the box in the UI: there are no write endpoints yet.
-  // It is set now so the standby is already configured safely before there are.
+  // Gates PUT /admin/filters, and defaults to readonly. A standby must stay
+  // readonly: its config is replaced by the primary every 10 minutes, so an
+  // edit there is not merely risky, it is a change that quietly disappears.
   const writable = (process.env.FEEDGEN_ADMIN_MODE ?? 'readonly').toLowerCase() === 'rw'
 
   app.use(
@@ -57,7 +59,10 @@ const mountAdminUi = (
     createAdminRouter({
       auth: createAdminAuth({ passwordHash }),
       page: true,
+      writable,
       status: () => collectStatus(ctx.db, ctx.cfg, startedAt, writable),
+      lab: (feed, filters, refresh) =>
+        measureCandidate(ctx.db, feed, filters, { refresh }),
     }),
   )
   console.log(

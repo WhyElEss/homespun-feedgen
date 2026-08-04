@@ -64,6 +64,13 @@ export type StatusSnapshot = {
 
 const filtersPath = () => process.env.FEEDGEN_FILTERS_PATH ?? '/data/filters.json'
 
+// Short digest of the config on disk. Exported because the save path checks the
+// SAME value the page displayed: if the two ever computed it differently, the
+// concurrency guard would be comparing one thing against another and silently
+// let an edit overwrite someone else's.
+export const shortDigest = (buf: Buffer): string =>
+  crypto.createHash('sha256').update(buf).digest('hex').slice(0, 12)
+
 // The box a change is being made ON. Both boxes run the same image from the
 // same tree, and filters.json is authoritative on the primary only — a UI that
 // cannot tell you which machine you are looking at is a way to lose an edit.
@@ -139,7 +146,7 @@ export const collectStatus = async (
       sizeBytes: stat.size,
       // Short digest: enough to compare two boxes at a glance, which is the
       // question this actually gets asked. The full hash is in check-parity.
-      sha256: crypto.createHash('sha256').update(buf).digest('hex').slice(0, 12),
+      sha256: shortDigest(buf),
     }
   } catch {
     filters = {
