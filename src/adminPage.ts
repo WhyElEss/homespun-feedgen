@@ -100,6 +100,36 @@ export const ADMIN_PAGE = `<!doctype html>
   .stat { text-align: center; padding: .8rem .5rem; }
   .stat .lbl { color: var(--muted); font-size: .75rem; text-transform: uppercase;
                letter-spacing: .05em; }
+  textarea.pat { min-height: 5.5rem; }
+  input[type=text], input[type=number] {
+    font: inherit; padding: .45rem .6rem; border-radius: 7px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--fg);
+  }
+  input[type=text] { width: 100%; }
+  input.num { width: 6rem; }
+  .picker { display: flex; align-items: center; gap: .6rem; margin-bottom: .8rem; }
+  .picker label { color: var(--muted); font-size: .82rem; }
+  .picker select { flex: 1; max-width: 32rem; }
+  .block { margin-bottom: .6rem; }
+  .bhead { display: flex; align-items: center; gap: .5rem; margin-bottom: .55rem; }
+  .bhead .spacer { flex: 1; }
+  .blabel { font-size: .78rem; font-weight: 600; text-transform: uppercase;
+            letter-spacing: .06em; color: var(--muted); }
+  .bbody > * + * { margin-top: .55rem; }
+  .bbody p { margin: 0; }
+  button.x { border: none; background: none; color: var(--muted); font-size: 1.1rem;
+             line-height: 1; padding: 0 .35rem; }
+  button.x:hover { color: var(--bad); }
+  .chips { display: flex; gap: .35rem; flex-wrap: wrap; }
+  .chip { font-size: .78rem; padding: .2rem .6rem; border-radius: 999px;
+          border: 1px solid var(--line); background: var(--bg); color: var(--muted); }
+  .chip.on { background: var(--ok); border-color: var(--ok); color: #fff; }
+  .chip:disabled { opacity: 1; }
+  .trow { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+  .tlabel { font-size: .82rem; color: var(--muted); }
+  .cbox { display: inline-flex; align-items: center; gap: .35rem; font-size: .85rem; }
+  .cbox input { margin: 0; }
+  .row.wrapx { flex-wrap: wrap; margin-top: 0; }
 </style>
 </head>
 <body>
@@ -319,105 +349,368 @@ export const ADMIN_PAGE = `<!doctype html>
     }));
   }
 
-  // ── the config editor, and the lab that measures an edit before it is saved
+  // ── the config editor: one feed at a time, shown as blocks
+  //
+  // The shape follows SkyFeed's builder, because that is the mental model these
+  // feeds were built with. Where this engine genuinely differs the block is
+  // still shown but marked fixed, rather than offering a control that does
+  // nothing: replies are always dropped, reposts are never indexed at all (they
+  // are a different collection), and the order is by indexedAt descending.
+  //
+  // Block ORDER carries no meaning here either — includes are OR'd against each
+  // other and so are excludes — so there is nothing to drag.
   function renderConfigEditor(s) {
-    var editing = null;   // the config as loaded, plus its digest
-    var box = h('div', { class: 'card pad' }, []);
-    app.appendChild(h('h2', { text: 'Filters' }));
-    app.appendChild(box);
+    var full = null, digest = null, writable = false, key = null, draft = null;
 
-    var area = h('textarea', { spellcheck: 'false', 'aria-label': 'filters.json' });
+    var feedSel = h('select', { 'aria-label': 'Feed to edit' });
+    var picker = h('div', { class: 'picker' }, [
+      h('label', { text: 'Editing feed', for: 'feedsel' }), feedSel
+    ]);
+    var blocks = h('div', {}, []);
     var msg = h('div', { class: 'msg' });
-    var feedSel = h('select', { 'aria-label': 'Feed to measure' });
     var results = h('div', {}, []);
 
     var btnValidate = h('button', { text: 'Validate' });
     var btnMeasure = h('button', { text: 'Measure this edit' });
     var btnSave = h('button', { class: 'primary', text: 'Save' });
     var btnReload = h('button', { text: 'Reload' });
+    var toolbar = h('div', { class: 'toolbar' }, [
+      btnValidate, btnMeasure, h('span', { class: 'spacer' }, []), btnReload, btnSave
+    ]);
 
-    function say(text, cls) { msg.className = 'msg ' + (cls || ''); msg.textContent = text; }
+    app.appendChild(h('h2', { text: 'Filters' }));
+    app.appendChild(picker);
+    app.appendChild(blocks);
+    app.appendChild(toolbar);
+    app.appendChild(msg);
+    app.appendChild(results);
+
+    function say(t, cls) { msg.className = 'msg ' + (cls || ''); msg.textContent = t; }
     function busy(on) {
       [btnValidate, btnMeasure, btnSave, btnReload].forEach(function (b) { b.disabled = on; });
+      if (!on) btnSave.disabled = !writable;
     }
-    function parsed() {
-      try { return { value: JSON.parse(area.value) }; }
-      catch (e) { return { error: 'Not valid JSON: ' + e.message }; }
+    // The whole config, with only the edited feed replaced. Anything this
+    // editor does not model — a comment key, another feed — is carried through
+    // untouched rather than rewritten from what the UI happens to know.
+    function assembled() {
+      var out = JSON.parse(JSON.stringify(full));
+      out.feeds[key] = draft;
+      return out;
     }
+
+    // ── block scaffolding
+    function block(label, controls, opts) {
+      opts = opts || {};
+      var head = h('div', { class: 'bhead' }, [h('span', { class: 'blabel', text: label })]);
+      if (opts.onRemove) {
+        var x = h('button', { class: 'x', title: 'Remove this block', text: '×' });
+        x.addEventListener('click', opts.onRemove);
+        head.appendChild(h('span', { class: 'spacer' }, []));
+        head.appendChild(x);
+      } else if (opts.fixed) {
+        head.appendChild(h('span', { class: 'spacer' }, []));
+        head.appendChild(h('span', { class: 'pill idle', text: 'fixed' }));
+      }
+      var body = h('div', { class: 'bbody' }, controls);
+      return h('div', { class: 'card pad block' + (opts.fixed ? ' inactive' : '') }, [head, body]);
+    }
+
+    function chip(text, on, onClick) {
+      var b = h('button', { class: 'chip' + (on ? ' on' : ''), text: text });
+      if (onClick) b.addEventListener('click', onClick); else b.disabled = true;
+      return b;
+    }
+
+    function checkbox(label, checked, onChange) {
+      var input = h('input', { type: 'checkbox' });
+      input.checked = !!checked;
+      input.addEventListener('change', function () { onChange(input.checked); });
+      var lab = h('label', { class: 'cbox' }, [input, h('span', { text: label })]);
+      return lab;
+    }
+
+    // ── regex blocks
+    // Our targets are three cumulative settings, not free checkboxes: text,
+    // text+alt, text+alt+link. "Link only" cannot be expressed, so Link implies
+    // Alt and clearing Alt clears Link.
+    function targetOf(p, kind) {
+      return p.target || (kind === 'include' ? 'text|alt_text' : 'text|alt_text|link');
+    }
+    function patternBlock(p, kind, i) {
+      var target = targetOf(p, kind);
+      var alt = target.indexOf('alt_text') >= 0;
+      var link = target.indexOf('link') >= 0;
+      var sensitive = (p.flags !== undefined) && p.flags.indexOf('i') < 0;
+
+      var area = h('textarea', { class: 'pat', spellcheck: 'false', 'aria-label': 'Pattern' });
+      area.value = p.pattern || '';
+      area.addEventListener('input', function () { p.pattern = area.value; });
+
+      var comment = h('input', { type: 'text', placeholder: 'note to your future self (optional)' });
+      comment.value = p.comment || '';
+      comment.addEventListener('input', function () {
+        if (comment.value) p.comment = comment.value; else delete p.comment;
+      });
+
+      function setTarget() {
+        p.target = link ? 'text|alt_text|link' : alt ? 'text|alt_text' : 'text';
+        redraw();
+      }
+      var chips = h('div', { class: 'chips' }, [
+        chip('Post Text', true, null),
+        chip('Image Alt Text', alt, function () {
+          alt = !alt; if (!alt) link = false; setTarget();
+        }),
+        chip('Link', link, function () {
+          link = !link; if (link) alt = true; setTarget();
+        })
+      ]);
+
+      var flagsRow = h('div', { class: 'row wrapx' }, [
+        checkbox('Case sensitive', sensitive, function (on) {
+          // Preserve any other flag someone set by hand; only 'i' is ours.
+          var base = (p.flags === undefined ? 'iu' : p.flags).replace(/i/g, '');
+          var next = on ? base : 'i' + base;
+          if (next === 'iu') delete p.flags; else p.flags = next;
+        }),
+        h('span', { class: 'small muted', text:
+          kind === 'include'
+            ? 'A post enters the feed if ANY include pattern matches.'
+            : 'A post is dropped if ANY exclude pattern matches.' })
+      ]);
+
+      return block(
+        (kind === 'include' ? 'RegEx — keep' : 'RegEx — remove') + ' #' + (i + 1),
+        [area, h('div', { class: 'trow' }, [h('span', { class: 'tlabel', text: 'Target' }), chips]),
+         flagsRow, comment],
+        { onRemove: function () {
+            var list = kind === 'include' ? draft.includePatterns : draft.excludePatterns;
+            list.splice(list.indexOf(p), 1);
+            redraw();
+          } }
+      );
+    }
+
+    function selectBlock(label, value, options, onChange, note) {
+      var sel = h('select', {}, []);
+      options.forEach(function (o) {
+        var opt = h('option', { value: o[0], text: o[1] });
+        if (o[0] === value) opt.setAttribute('selected', 'selected');
+        sel.appendChild(opt);
+      });
+      sel.addEventListener('change', function () { onChange(sel.value); });
+      var kids = [sel];
+      if (note) kids.push(h('span', { class: 'small muted', text: note }));
+      return block(label, [h('div', { class: 'row wrapx' }, kids)]);
+    }
+
+    function redraw() {
+      blocks.innerHTML = '';
+      if (!draft) return;
+
+      // Input — the closest thing this engine has to SkyFeed's source block.
+      var retType = (draft.retention && draft.retention.type) || 'hours';
+      var retVal = (draft.retention && draft.retention.value) || 72;
+      var num = h('input', { type: 'number', min: '1', class: 'num' });
+      num.value = String(retVal);
+      num.addEventListener('input', function () {
+        var v = parseInt(num.value, 10);
+        if (v > 0) draft.retention = { type: retType, value: v };
+      });
+      var unit = h('select', {}, []);
+      [['hours', 'hours old'], ['count', 'newest posts']].forEach(function (o) {
+        var opt = h('option', { value: o[0], text: o[1] });
+        if (o[0] === retType) opt.setAttribute('selected', 'selected');
+        unit.appendChild(opt);
+      });
+      unit.addEventListener('change', function () {
+        draft.retention = { type: unit.value, value: parseInt(num.value, 10) || 72 };
+        redraw();
+      });
+      blocks.appendChild(block('Input', [
+        h('div', { class: 'row wrapx' }, [
+          h('span', { text: 'Entire network, continuously. Keep' }), num, unit
+        ]),
+        h('p', { class: 'small muted', text:
+          'There is no time window on the source: this box reads the firehose ' +
+          'without pause. Retention is what bounds the feed, and the hourly GC ' +
+          'enforces it.' })
+      ]));
+
+      var name = h('input', { type: 'text', placeholder: 'display name' });
+      name.value = draft.displayName || '';
+      name.addEventListener('input', function () {
+        if (name.value) draft.displayName = name.value; else delete draft.displayName;
+      });
+      blocks.appendChild(block('Feed name', [name, h('p', { class: 'small muted', text:
+        'Shown here only. The name readers see lives in the feed record on your ' +
+        'PDS — change it with setFeedDescription/repointFeed, not from this page.' })]));
+
+      (draft.includePatterns || []).forEach(function (p, i) {
+        blocks.appendChild(patternBlock(p, 'include', i));
+      });
+
+      if ((draft.includeDids || []).length) {
+        var dids = h('textarea', { class: 'pat', spellcheck: 'false' });
+        dids.value = draft.includeDids.join('\\n');
+        dids.addEventListener('input', function () {
+          draft.includeDids = dids.value.split(/\\s+/).filter(Boolean);
+        });
+        blocks.appendChild(block('Authors — keep only these DIDs', [dids,
+          h('p', { class: 'small muted', text: 'One DID per line. With this set, ' +
+            'nothing else can enter the feed.' })]));
+      }
+
+      (draft.excludePatterns || []).forEach(function (p, i) {
+        blocks.appendChild(patternBlock(p, 'exclude', i));
+      });
+
+      blocks.appendChild(selectBlock('Remove if — item has labels',
+        draft.selfLabeledPosts || 'exclude',
+        [['allow', 'allow them'], ['exclude', 'remove them'], ['only', 'ONLY them']],
+        function (v) { draft.selfLabeledPosts = v; },
+        'Self-labelled (adult) posts.'));
+
+      blocks.appendChild(selectBlock('Remove if — item is a GIF',
+        draft.gifPosts || 'allow',
+        [['allow', 'allow them'], ['exclude', 'remove them'], ['only', 'ONLY them']],
+        function (v) { draft.gifPosts = v; },
+        'Tenor links and bare .gif URLs.'));
+
+      blocks.appendChild(selectBlock('Remove if — item is a quote post',
+        draft.quotePosts || 'allow',
+        [['allow', 'allow them'], ['exclude', 'remove them'], ['only', 'ONLY them']],
+        function (v) { draft.quotePosts = v; }));
+
+      var listUri = h('input', { type: 'text', placeholder: 'at://…/app.bsky.graph.list/…' });
+      listUri.value = draft.excludeListUri || '';
+      listUri.addEventListener('input', function () {
+        if (listUri.value) draft.excludeListUri = listUri.value.trim();
+        else delete draft.excludeListUri;
+      });
+      blocks.appendChild(block('Remove — list of users', [listUri,
+        h('p', { class: 'small muted', text:
+          'Read from the AppView and refreshed hourly, so a newly added account ' +
+          'is not blocked immediately — and adding one never removes posts ' +
+          'already stored.' })]));
+
+      var pin = h('input', { type: 'text', placeholder: 'at://…/app.bsky.feed.post/… (optional)' });
+      pin.value = draft.pinnedPost || '';
+      pin.addEventListener('input', function () {
+        if (pin.value) draft.pinnedPost = pin.value.trim(); else delete draft.pinnedPost;
+      });
+      blocks.appendChild(block('Pinned post', [pin,
+        h('p', { class: 'small muted', text:
+          'Served first on page 1 with the Pinned badge. Whether it survives ' +
+          'un-pinning depends on whether it matches this feed on its own.' })]));
+
+      blocks.appendChild(block('Remove if — item is a reply',
+        [h('p', { class: 'small muted', text:
+          'Always on. Every one of these feeds dropped replies under SkyFeed and ' +
+          'the ingest keeps doing it — there is no setting.' })], { fixed: true }));
+      blocks.appendChild(block('Remove if — item is a repost',
+        [h('p', { class: 'small muted', text:
+          'Reposts are a different collection and are never indexed, so there is ' +
+          'nothing to remove.' })], { fixed: true }));
+      blocks.appendChild(block('Sort by',
+        [h('p', { class: 'small muted', text:
+          'indexedAt, descending — stamped from the Jetstream event time, so a ' +
+          'replayed post lands in its true position rather than on top.' })],
+        { fixed: true }));
+
+      var addInc = h('button', { text: '+ RegEx — keep' });
+      addInc.addEventListener('click', function () {
+        draft.includePatterns = draft.includePatterns || [];
+        draft.includePatterns.push({ pattern: '' });
+        redraw();
+      });
+      var addExc = h('button', { text: '+ RegEx — remove' });
+      addExc.addEventListener('click', function () {
+        draft.excludePatterns = draft.excludePatterns || [];
+        draft.excludePatterns.push({ pattern: '' });
+        redraw();
+      });
+      blocks.appendChild(h('div', { class: 'toolbar' }, [addInc, addExc,
+        h('span', { class: 'small muted', text:
+          'Order does not matter: includes are OR-ed together, and so are excludes.' })]));
+    }
+
+    function selectFeed(k) {
+      key = k;
+      draft = JSON.parse(JSON.stringify(full.feeds[k] || {}));
+      results.innerHTML = '';
+      say('');
+      redraw();
+    }
+
+    feedSel.addEventListener('change', function () { selectFeed(feedSel.value); });
 
     function load() {
       busy(true); say('Loading…');
       call('filters').then(function (r) { return r.json(); }).then(function (b) {
         busy(false);
         if (!b.ok) { say(b.error || 'Could not load the config', 'bad'); return; }
-        editing = { digest: b.digest, writable: b.writable };
-        area.value = JSON.stringify(b.filters, null, 2);
+        full = b.filters; digest = b.digest; writable = b.writable;
+        btnSave.disabled = !writable;
         feedSel.innerHTML = '';
-        (s.feeds || []).filter(function (f) { return f.routed; }).forEach(function (f) {
-          feedSel.appendChild(h('option', { value: f.key,
-            text: (f.displayName || f.key) + ' — ' + f.rows + ' posts' }));
+        Object.keys(full.feeds || {}).forEach(function (k) {
+          var f = (s.feeds || []).filter(function (x) { return x.key === k; })[0];
+          feedSel.appendChild(h('option', { value: k,
+            text: (full.feeds[k].displayName || k) + ' — ' + k + (f ? ' — ' + f.rows + ' posts' : '') }));
         });
-        btnSave.disabled = !b.writable;
-        say('Loaded, digest ' + b.digest + (b.writable ? '' : ' — this box is read-only'),
-            b.writable ? '' : 'warn');
+        selectFeed(feedSel.value || Object.keys(full.feeds || {})[0]);
+        say('Loaded, digest ' + digest + (writable ? '' : ' — this box is read-only'),
+            writable ? '' : 'warn');
       }).catch(function (e) { busy(false); say('Network error: ' + e.message, 'bad'); });
     }
 
     btnReload.addEventListener('click', load);
 
     btnValidate.addEventListener('click', function () {
-      var p = parsed();
-      if (p.error) { say(p.error, 'bad'); return; }
       busy(true); say('Validating…');
-      call('filters/validate', { body: p.value }).then(function (r) {
+      call('filters/validate', { body: assembled() }).then(function (r) {
         return r.json().then(function (b) { return { status: r.status, body: b }; });
       }).then(function (res) {
         busy(false);
-        if (res.status === 200) {
-          say('Valid. ' + res.body.feeds.map(function (f) {
-            return f.key + ': ' + f.includePatterns + ' inc / ' + f.excludePatterns + ' exc';
-          }).join('\\n'), 'ok');
-        } else { say(res.body.error, 'bad'); }
+        if (res.status !== 200) { say(res.body.error, 'bad'); return; }
+        var me = res.body.feeds.filter(function (f) { return f.key === key; })[0] || {};
+        say('Valid — ' + me.includePatterns + ' keep / ' + me.excludePatterns +
+            ' remove, ' + me.includeDids + ' author DID(s).', 'ok');
       }).catch(function (e) { busy(false); say('Network error: ' + e.message, 'bad'); });
     });
 
     btnMeasure.addEventListener('click', function () {
-      var p = parsed();
-      if (p.error) { say(p.error, 'bad'); return; }
       busy(true); results.innerHTML = '';
       say('Measuring against stored posts — the first run for a feed fetches them ' +
           'from the AppView and can take a while…');
-      api('lab/measure', { feed: feedSel.value, filters: p.value }).then(function (r) {
+      api('lab/measure', { feed: key, filters: assembled() }).then(function (r) {
         return r.json().then(function (b) { return { status: r.status, body: b }; });
       }).then(function (res) {
         busy(false);
         if (res.status !== 200) { say(res.body.error, 'bad'); return; }
-        say('');
-        renderLab(res.body.result);
+        say(''); renderLab(res.body.result);
       }).catch(function (e) { busy(false); say('Network error: ' + e.message, 'bad'); });
     });
 
     btnSave.addEventListener('click', function () {
-      var p = parsed();
-      if (p.error) { say(p.error, 'bad'); return; }
-      if (!confirm('Save this config? It goes live within ~10 seconds, and ' +
+      if (!confirm('Save ' + key + '? It goes live within ~10 seconds, and ' +
                    'auto-purge will replay it over stored posts within 5 minutes.')) return;
       busy(true); say('Saving…');
-      call('filters', { method: 'PUT',
-        body: { filters: p.value, expectedDigest: editing && editing.digest }
-      }).then(function (r) {
-        return r.json().then(function (b) { return { status: r.status, body: b }; });
-      }).then(function (res) {
-        busy(false);
-        if (res.status !== 200) { say(res.body.error, 'bad'); return; }
-        editing.digest = res.body.digest;
-        say('Saved. New digest ' + res.body.digest + '\\n' + res.body.note, 'ok');
-      }).catch(function (e) { busy(false); say('Network error: ' + e.message, 'bad'); });
+      call('filters', { method: 'PUT', body: { filters: assembled(), expectedDigest: digest } })
+        .then(function (r) {
+          return r.json().then(function (b) { return { status: r.status, body: b }; });
+        }).then(function (res) {
+          busy(false);
+          if (res.status !== 200) { say(res.body.error, 'bad'); return; }
+          digest = res.body.digest;
+          full.feeds[key] = JSON.parse(JSON.stringify(draft));
+          say('Saved. New digest ' + digest + '\\n' + res.body.note, 'ok');
+        }).catch(function (e) { busy(false); say('Network error: ' + e.message, 'bad'); });
     });
 
     function renderLab(r) {
       results.innerHTML = '';
-      var cls = r.removed === 0 ? 'ok' : r.wouldExceedAutoPurgeCap ? 'bad' : 'warn';
       results.appendChild(h('div', { class: 'grid' }, [
         h('div', { class: 'card stat' }, [
           h('div', { class: 'big', text: String(r.removed) }),
@@ -429,22 +722,20 @@ export const ADMIN_PAGE = `<!doctype html>
           h('div', { class: 'big', text: String(r.keptAfter) }),
           h('div', { class: 'lbl', text: 'would remain (now ' + r.keptNow + ')' })])
       ]));
-
       if (r.wouldExceedAutoPurgeCap) {
         results.appendChild(h('p', { class: 'msg bad', text:
           'This is over the auto-purge safety cap (25 posts or 5%). The cleanup ' +
           'would REFUSE to apply it and log the refusal instead, so the posts ' +
-          'would sit in the feed until someone looks. That cap exists for exactly ' +
-          'this shape of edit — check the samples below before saving.' }));
+          'would sit in the feed until someone looks. On a small feed even one ' +
+          'post can cross the 5% line — check the count, not just the colour.' }));
       }
       if (r.unretrievable) {
         results.appendChild(h('p', { class: 'msg warn', text:
           r.unretrievable + ' stored row(s) could not be fetched from the AppView ' +
           '(deleted upstream) and were not measured.' }));
       }
-      results.appendChild(h('p', { class: 'small muted', text: r.note +
-        ' Corpus fetched ' + since(r.cachedAt) + '.' }));
-
+      results.appendChild(h('p', { class: 'small muted',
+        text: r.note + ' Corpus fetched ' + since(r.cachedAt) + '.' }));
       if (r.samples.length) {
         var rows = r.samples.map(function (x) {
           return h('tr', {}, [
@@ -466,19 +757,6 @@ export const ADMIN_PAGE = `<!doctype html>
       }
     }
 
-    box.appendChild(h('p', { class: 'small muted', text:
-      'Edits to existing feeds only — adding or removing a feed needs a restart, ' +
-      'because the routing table is built at startup. Measure before you save: it ' +
-      'replays the candidate over the posts this feed already holds and shows what ' +
-      'would be purged. It cannot show what a WIDENED include would let in, since ' +
-      'those posts were never stored.' }));
-    box.appendChild(area);
-    box.appendChild(h('div', { class: 'toolbar' }, [
-      btnValidate, feedSel, btnMeasure,
-      h('span', { class: 'spacer' }, []), btnReload, btnSave
-    ]));
-    box.appendChild(msg);
-    box.appendChild(results);
     load();
   }
 

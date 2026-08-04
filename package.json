@@ -27,7 +27,8 @@
     "test:pinned": "FEEDGEN_FILTERS_PATH=/tmp/pinned-test-filters.json ts-node scripts/testPinned.ts",
     "test:validate": "FEEDGEN_FILTERS_PATH=./filters.example.json ts-node scripts/testValidate.ts",
     "test:subscription": "FEEDGEN_FILTERS_PATH=/tmp/sub-test-filters.json ts-node scripts/testSubscription.ts",
-    "test:admin": "ts-node scripts/testAdmin.ts"
+    "test:admin": "ts-node scripts/testAdmin.ts",
+    "test:adminpage": "ts-node scripts/testAdminPage.ts"
   },
   "dependencies": {
     "@atproto/api": "^0.13.28",
