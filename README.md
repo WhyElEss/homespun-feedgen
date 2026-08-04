@@ -244,7 +244,27 @@ mv data/_bk.sqlite ~/backup.sqlite
 
 `validateFilters(raw)` checks a candidate and returns the compiled feeds, or throws with the offending path. `writeFilters(raw)` validates and then persists it — to a temporary file in the same directory, renamed into place, so a reader either sees the old config or the new one and never a half-written file. Hand-editing survives a torn read (the reload just fails and the previous config is kept); something saving on every keystroke would not.
 
-Set `FEEDGEN_ADMIN_PORT` to expose a small read/validate API — `GET /admin/filters`, `POST /admin/filters/validate`. It is a **separate listener** from the feed API, bound to `127.0.0.1` unless you set `FEEDGEN_ADMIN_HOST`, and it does not exist unless you configure the port. The feed app is behind your tunnel and reachable from the internet; this must not be. Reach it over an SSH tunnel. There is deliberately no write endpoint: writing is available in-process, and putting it on HTTP needs an authentication story worth designing once there is a client for it.
+Set `FEEDGEN_ADMIN_PORT` to expose a small read/validate API — `GET /admin/filters`, `POST /admin/filters/validate`. It is a **separate listener** from the feed API, bound to `127.0.0.1` unless you set `FEEDGEN_ADMIN_HOST`, and it does not exist unless you configure the port. Reach it over an SSH tunnel. There is deliberately no write endpoint: writing is available in-process through `writeFilters`, and putting it on HTTP is a decision to take deliberately rather than by accident.
+
+### The admin UI
+
+Set `FEEDGEN_ADMIN_UI="on"` and the service also serves a password-protected page at **`/admin` on the public app** — the same app your tunnel points at, so it is reachable wherever your feed is. It shows what the box is doing: ingest lag per Jetstream cursor, stored posts and time span per feed, the retention and pattern counts each feed is running, and the digest and mtime of `filters.json`. It is **read-only**; the config routes behind it are the same read/validate pair as above, and there is still no write endpoint.
+
+Putting an admin surface on a public hostname is a real decision, so the guard rails are not optional:
+
+```bash
+yarn adminPassword        # prompts twice, prints the .env lines
+```
+
+* the password is stored only as a scrypt hash, and hashing is async so a login cannot stall the ingest loop it shares a process with;
+* **with `FEEDGEN_ADMIN_UI=on` and no valid hash, the service refuses to start.** An unauthenticated admin page on a public hostname is the one failure this must not have, and refusing to boot is the only version of it nobody misses;
+* sessions live server-side, the cookie carries a random token and nothing else, and it is `HttpOnly`, `SameSite=Strict`, scoped to `/admin`, and `Secure` whenever the request arrived over HTTPS;
+* failed logins are rate limited per client address and globally — the global limiter is what still holds when someone reaches the service directly and forges `CF-Connecting-IP`;
+* the page loads no external resource, so its Content-Security-Policy forbids everything but its own inline style and script, and `frame-ancestors 'none'` keeps the login form out of an iframe.
+
+`FEEDGEN_BOX_NAME` labels the box in the UI, and `FEEDGEN_ADMIN_MODE` (`readonly` by default, or `rw`) says whether this box is the one whose config may be edited — today that only sets the label, and write endpoints will require it when they exist.
+
+**If you run a standby, leave `FEEDGEN_ADMIN_UI` unset on it.** It runs the same image from the same tree and answers on its own hostname, so a `.env` copied from the primary is all it takes to publish a second login page — and, once writes exist, to let someone edit a config that the next sync will overwrite. `yarn test:adminauth` covers the refusals: the guard, the rate limiter, session expiry, cross-origin posts, and that the snapshot carries no secret.
 
 `validateFilters(raw)` in `src/filter.ts` checks a candidate config and returns the compiled feeds, or throws with the offending path — `feeds["abc"].includePatterns[2]: …`. It does **not** install what it validated, so anything editing the config from outside (an admin UI, a pre-commit hook, a deploy check) can ask whether an edit is valid before writing it to disk, instead of writing it and reading the log. `yarn test:validate` covers the error messages and that property.
 

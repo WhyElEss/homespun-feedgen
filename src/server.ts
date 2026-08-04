@@ -11,7 +11,61 @@ import { AppContext, Config } from './config'
 import wellKnown from './well-known'
 import { watchFilters } from './filter'
 import { buildAlgos } from './algos'
-import { startAdminServer } from './admin'
+import { createAdminRouter, startAdminServer } from './admin'
+import { createAdminAuth, looksLikeHash } from './adminAuth'
+import { collectStatus } from './adminStatus'
+
+// The admin UI on the PUBLIC app. Off unless FEEDGEN_ADMIN_UI=on, because this
+// app is what the Cloudflare tunnel points at — an install that does not ask
+// for it must not get it. Two consequences worth stating plainly:
+//
+//   * a missing or malformed password hash is a startup ERROR, not a warning.
+//     The alternative is an unauthenticated admin surface on a public hostname,
+//     and refusing to start is the only failure mode that cannot be missed;
+//   * a standby box must leave FEEDGEN_ADMIN_UI unset. It runs the same image
+//     from the same tree and is reachable on its own hostname, so a copied .env
+//     is all it takes to publish a second login page — see FAILOVER.md.
+const mountAdminUi = (
+  app: express.Application,
+  ctx: AppContext,
+  startedAt: number,
+): void => {
+  if ((process.env.FEEDGEN_ADMIN_UI ?? '').toLowerCase() !== 'on') return
+
+  const passwordHash = process.env.FEEDGEN_ADMIN_PASSWORD_HASH ?? ''
+  if (!passwordHash) {
+    throw new Error(
+      'FEEDGEN_ADMIN_UI=on but FEEDGEN_ADMIN_PASSWORD_HASH is not set — ' +
+        'run `yarn adminPassword` and put the result in .env. Refusing to ' +
+        'serve an admin UI with no password.',
+    )
+  }
+  if (!looksLikeHash(passwordHash)) {
+    throw new Error(
+      'FEEDGEN_ADMIN_PASSWORD_HASH is not a scrypt hash produced by ' +
+        '`yarn adminPassword` (expected scrypt$N$r$p$salt$key). Refusing to ' +
+        'start with a password nobody could match.',
+    )
+  }
+
+  // Today this only labels the box in the UI: there are no write endpoints yet.
+  // It is set now so the standby is already configured safely before there are.
+  const writable = (process.env.FEEDGEN_ADMIN_MODE ?? 'readonly').toLowerCase() === 'rw'
+
+  app.use(
+    '/admin',
+    createAdminRouter({
+      auth: createAdminAuth({ passwordHash }),
+      page: true,
+      status: () => collectStatus(ctx.db, ctx.cfg, startedAt, writable),
+    }),
+  )
+  console.log(
+    `admin: UI mounted at /admin on the public app (${
+      writable ? 'rw' : 'read-only'
+    }, password required)`,
+  )
+}
 
 export class FeedGenerator {
   public app: express.Application
@@ -69,6 +123,7 @@ export class FeedGenerator {
     describeGenerator(server, ctx)
     app.use(server.xrpc.router)
     app.use(wellKnown(ctx))
+    mountAdminUi(app, ctx, Date.now())
 
     return new FeedGenerator(app, db, firehose, cfg)
   }
