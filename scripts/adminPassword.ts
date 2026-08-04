@@ -63,11 +63,19 @@ const run = async () => {
     throw new Error('generated hash failed its own verification — refusing to print it')
   }
 
-  stdout.write('\nAdd this to .env on the box that should serve the UI:\n\n')
+  // Say this before printing the lines, and say it plainly: run inside the
+  // container — which is how the yarn alias runs it — this process cannot write
+  // .env even if it wanted to, because compose mounts only ./data. An operator
+  // who assumes "it saved" ends up with a service that never got the password.
+  stdout.write('\n=== NOTHING HAS BEEN SAVED ===\n')
+  stdout.write('This cannot write .env: it runs inside the container, and .env is not\n')
+  stdout.write('mounted into it. Copy the two lines below into .env ON THE HOST by hand,\n')
+  stdout.write('using an editor rather than a shell redirect, so the hash stays out of\n')
+  stdout.write('your shell history. Then: docker compose up -d feedgen\n\n')
   stdout.write(`FEEDGEN_ADMIN_UI="on"\n`)
   stdout.write(`FEEDGEN_ADMIN_PASSWORD_HASH="${hash}"\n\n`)
   stdout.write('Leave both UNSET on a standby box, or it publishes its own login page.\n')
-  stdout.write('Changing .env makes docker compose recreate the service.\n')
+  stdout.write('The login form asks for the password only — there is no username.\n')
 }
 
 run().catch((err) => {

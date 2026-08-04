@@ -63,10 +63,13 @@ export const ADMIN_PAGE = `<!doctype html>
   }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button:disabled { opacity: .55; cursor: default; }
-  input[type=password] {
+  input[type=password], input[type=text] {
     font: inherit; width: 100%; padding: .55rem .7rem; border-radius: 7px;
     border: 1px solid var(--line); background: var(--bg); color: var(--fg);
   }
+  /* Present for password managers, not for the operator: it carries no meaning
+     and cannot be changed, so it should not look like something to fill in. */
+  input.account { color: var(--muted); cursor: default; margin-bottom: .5rem; }
   form.login { max-width: 21rem; margin: 4rem auto; }
   form.login p { color: var(--muted); font-size: .85rem; margin: .2rem 0 1rem; }
   .row { display: flex; gap: .5rem; align-items: center; margin-top: .7rem; }
@@ -126,14 +129,22 @@ export const ADMIN_PAGE = `<!doctype html>
 
   function renderLogin(message) {
     app.innerHTML = '';
+    // There is no account to choose: the password is the only credential. This
+    // field exists solely so password managers have an identity to file the
+    // entry under — many will not offer to save a password-only form, and some
+    // save it against a blank user and then never offer to fill it again. It is
+    // readonly, skipped by Tab, and never sent to the server.
+    var user = h('input', { type: 'text', autocomplete: 'username', value: 'admin',
+                            readonly: 'readonly', tabindex: '-1', 'aria-label': 'Account' });
+    user.className = 'account';
     var input = h('input', { type: 'password', autocomplete: 'current-password',
-                             'aria-label': 'Admin password' });
+                             'aria-label': 'Admin password', placeholder: 'Password' });
     var err = h('div', { class: 'err', text: message || '' });
     var btn = h('button', { class: 'primary', type: 'submit', text: 'Sign in' });
     var form = h('form', { class: 'login card pad' }, [
       h('h1', { text: 'feedgen admin' }),
       h('p', { text: 'Config and status for the feed generator.' }),
-      input, h('div', { class: 'row' }, [btn]), err
+      user, input, h('div', { class: 'row' }, [btn]), err
     ]);
     form.addEventListener('submit', function (e) {
       e.preventDefault();

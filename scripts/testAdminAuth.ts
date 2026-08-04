@@ -144,6 +144,11 @@ const run = async () => {
       console.log(`      ${String(err?.message ?? err)}`)
     }
     check('the inlined script parses', parses && script.length > 500)
+    check(
+      'the login form carries a username field, or managers will not save the password',
+      page.text.includes("autocomplete: 'username'") &&
+        page.text.includes("autocomplete: 'current-password'"),
+    )
 
     check('GET /filters is refused', (await call('/filters')).status === 401)
     check('GET /api/status is refused', (await call('/api/status')).status === 401)
