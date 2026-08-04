@@ -57,6 +57,12 @@ export const ADMIN_PAGE = `<!doctype html>
   .pill { display: inline-block; padding: .1rem .5rem; border-radius: 999px;
           font-size: .75rem; font-weight: 600; border: 1px solid currentColor; }
   .pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); } .pill.bad { color: var(--bad); }
+  .pill.idle { color: var(--muted); }
+  /* A cursor left behind by an endpoint switch: still worth showing, but it
+     must not compete for attention with the one that is actually running. */
+  .card.inactive { opacity: .65; }
+  .card.inactive .note { margin: .6rem 0 0; padding-top: .5rem;
+                         border-top: 1px dashed var(--line); }
   button {
     font: inherit; padding: .45rem .9rem; border-radius: 7px; cursor: pointer;
     border: 1px solid var(--line); background: var(--card); color: var(--fg);
@@ -205,13 +211,34 @@ export const ADMIN_PAGE = `<!doctype html>
 
     // ── ingest
     app.appendChild(h('h2', { text: 'Ingest' }));
-    var cursorCards = s.cursors.map(function (c) {
+    // sub_state is keyed by the endpoint STRING, so changing
+    // FEEDGEN_SUBSCRIPTION_ENDPOINT starts a fresh row and freezes the old one
+    // at the moment of the switch. Nothing reads it — the service loads the
+    // cursor for its configured endpoint only — but showing it with a lag badge
+    // reports a dead row as days behind, which reads as ingest being broken.
+    // Only the configured endpoint gets a badge; the rest are labelled.
+    var cursors = s.cursors.slice().sort(function (a, b) {
+      var aa = a.service === s.service.subscriptionEndpoint ? 0 : 1;
+      var bb = b.service === s.service.subscriptionEndpoint ? 0 : 1;
+      return aa - bb;
+    });
+    var cursorCards = cursors.map(function (c) {
+      var active = c.service === s.service.subscriptionEndpoint;
       var cls = c.lagSec == null ? '' : c.lagSec > 900 ? 'bad' : c.lagSec > 120 ? 'warn' : 'ok';
-      return h('div', { class: 'card pad' }, [h('dl', {}, [
+      var card = h('div', { class: 'card pad' + (active ? '' : ' inactive') }, [h('dl', {}, [
         kv('Endpoint', c.service.replace(/^wss?:\\/\\//, ''), 'mono small'),
-        kv('Behind by', ago(c.lagSec), 'pill ' + cls),
+        active
+          ? kv('Behind by', ago(c.lagSec), 'pill ' + cls)
+          : kv('Status', 'not in use', 'pill idle'),
         kv('Cursor at', c.at ? c.at.replace('T', ' ').replace('.000Z', 'Z') : '—', 'mono small')
       ])]);
+      if (!active) {
+        card.appendChild(h('p', { class: 'small muted note', text:
+          'Left over from an earlier endpoint. The cursor is frozen at the ' +
+          'moment of the switch and nothing reads it — deleting the row is not ' +
+          'required.' }));
+      }
+      return card;
     });
     if (!cursorCards.length) {
       cursorCards = [h('div', { class: 'card pad muted', text: 'No cursor recorded yet.' })];

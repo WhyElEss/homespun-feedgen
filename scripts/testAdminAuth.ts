@@ -149,6 +149,10 @@ const run = async () => {
       page.text.includes("autocomplete: 'username'") &&
         page.text.includes("autocomplete: 'current-password'"),
     )
+    check(
+      'the page tells the live cursor from one left by an endpoint switch',
+      page.text.includes('s.service.subscriptionEndpoint'),
+    )
 
     check('GET /filters is refused', (await call('/filters')).status === 401)
     check('GET /api/status is refused', (await call('/api/status')).status === 401)
