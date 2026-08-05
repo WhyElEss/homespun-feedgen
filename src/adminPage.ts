@@ -131,6 +131,12 @@ export const ADMIN_PAGE = `<!doctype html>
   .cbox input { margin: 0; }
   .row.wrapx { flex-wrap: wrap; margin-top: 0; }
   .warn-text { color: var(--warn); }
+  img.avatar { width: 72px; height: 72px; border-radius: 12px; object-fit: cover;
+               border: 1px solid var(--line); background: var(--bg); }
+  .grow { flex: 1; min-width: 12rem; }
+  .flabel { display: block; font-size: .78rem; color: var(--muted);
+            text-transform: uppercase; letter-spacing: .05em; margin-top: .3rem; }
+  input[type=file] { font: inherit; font-size: .85rem; }
 </style>
 </head>
 <body>
@@ -394,6 +400,7 @@ export const ADMIN_PAGE = `<!doctype html>
     root.appendChild(toolbar);
     root.appendChild(msg);
     root.appendChild(results);
+    renderWizard(root);
 
     function say(t, cls) { msg.className = 'msg ' + (cls || ''); msg.textContent = t; }
     function busy(on) {
@@ -518,6 +525,7 @@ export const ADMIN_PAGE = `<!doctype html>
     function redraw() {
       blocks.innerHTML = '';
       if (!draft) return;
+      blocks.appendChild(recordCard());
 
       // Input — the closest thing this engine has to SkyFeed's source block.
       var retType = (draft.retention && draft.retention.type) || 'hours';
@@ -581,14 +589,14 @@ export const ADMIN_PAGE = `<!doctype html>
           'enforces it.' })
       ]));
 
-      var name = h('input', { type: 'text', placeholder: 'display name' });
-      name.value = draft.displayName || '';
-      name.addEventListener('input', function () {
-        if (name.value) draft.displayName = name.value; else delete draft.displayName;
+      var label = h('input', { type: 'text', placeholder: 'label for logs' });
+      label.value = draft.displayName || '';
+      label.addEventListener('input', function () {
+        if (label.value) draft.displayName = label.value; else delete draft.displayName;
       });
-      blocks.appendChild(block('Feed name', [name, h('p', { class: 'small muted', text:
-        'Shown here only. The name readers see lives in the feed record on your ' +
-        'PDS — change it with setFeedDescription/repointFeed, not from this page.' })]));
+      blocks.appendChild(block('Internal label', [label, h('p', { class: 'small muted', text:
+        'Only this page and the service log ever show it. The name readers see is ' +
+        'in the card above, which publishes to your PDS.' })]));
 
       (draft.includePatterns || []).forEach(function (p, i) {
         blocks.appendChild(patternBlock(p, 'include', i));
@@ -722,6 +730,279 @@ export const ADMIN_PAGE = `<!doctype html>
         h('span', { class: 'small muted', text:
           'Order does not matter: includes are OR-ed together, and so are excludes.' })]));
       showDirty();
+    }
+
+    // ── the feed RECORD: name, description, avatar — what readers see.
+    //
+    // These are not in filters.json at all; they live in the feed's record on
+    // the PDS. Keeping them in a separate card with its own button is the
+    // point: pressing Save below must never look like it might publish them,
+    // and publishing must never look like it might change a filter.
+    var records = {};      // rkey -> the live record, once fetched
+    var pendingAvatar = null;  // {base64, dataUrl, name} chosen but not published
+
+    function credsRow(id) {
+      var handle = h('input', { type: 'text', autocomplete: 'username',
+                                placeholder: 'your handle, e.g. you.bsky.social' });
+      var pass = h('input', { type: 'password', autocomplete: 'current-password',
+                              placeholder: 'app password' });
+      var row = h('div', {}, [
+        h('div', { class: 'row wrapx' }, [handle, pass]),
+        h('p', { class: 'small muted', text:
+          'Used for this one write and then forgotten — nothing is stored on the ' +
+          'box. It must be an APP PASSWORD (Settings → Privacy and security → ' +
+          'App passwords), not your account password: app passwords skip the ' +
+          'emailed code and can be revoked on their own.' })
+      ]);
+      return { el: row, handle: handle, pass: pass };
+    }
+
+    function recordCard() {
+      var card = h('div', { class: 'card pad block' }, []);
+      var head = h('div', { class: 'bhead' }, [
+        h('span', { class: 'blabel', text: 'Feed record — what readers see' })
+      ]);
+      var bodyEl = h('div', { class: 'bbody' }, [
+        h('p', { class: 'small muted', text: 'Loading the published record…' })
+      ]);
+      card.appendChild(head);
+      card.appendChild(bodyEl);
+
+      var rec = records[key];
+      if (rec) fill(bodyEl, rec);
+      else {
+        call('feed/' + encodeURIComponent(key) + '/record').then(function (r) {
+          return r.json().then(function (b) { return { status: r.status, body: b }; });
+        }).then(function (res) {
+          bodyEl.innerHTML = '';
+          if (res.status !== 200) {
+            bodyEl.appendChild(h('p', { class: 'small warn-text', text:
+              'No published record for this rkey: ' + res.body.error }));
+            return;
+          }
+          records[key] = res.body.record;
+          fill(bodyEl, res.body.record);
+        }).catch(function (e) {
+          bodyEl.innerHTML = '';
+          bodyEl.appendChild(h('p', { class: 'small warn-text',
+            text: 'Could not read the record: ' + e.message }));
+        });
+      }
+      return card;
+
+      function fill(el, rec) {
+        el.innerHTML = '';
+        var name = h('input', { type: 'text', placeholder: 'display name' });
+        name.value = rec.displayName || '';
+        var desc = h('textarea', { class: 'pat', spellcheck: 'false',
+                                   placeholder: 'description shown on the feed page' });
+        desc.value = rec.description || '';
+
+        var img = h('img', { class: 'avatar', alt: 'current avatar' });
+        img.setAttribute('src', base + 'feed/' + encodeURIComponent(key) + '/avatar');
+        var file = h('input', { type: 'file', accept: 'image/png,image/jpeg' });
+        var fileMsg = h('div', { class: 'small muted' });
+        file.addEventListener('change', function () {
+          var f = file.files && file.files[0];
+          if (!f) { pendingAvatar = null; fileMsg.textContent = ''; return; }
+          var reader = new FileReader();
+          reader.onload = function () {
+            pendingAvatar = { base64: String(reader.result), name: f.name };
+            img.setAttribute('src', String(reader.result));
+            fileMsg.className = 'small muted';
+            fileMsg.textContent = f.name + ' — ' + Math.round(f.size / 1024) +
+              ' KB, not published yet' +
+              (f.size > 1000000 ? ' — OVER the 1 MB the lexicon allows' : '');
+          };
+          reader.readAsDataURL(f);
+        });
+
+        var creds = credsRow();
+        var btn = h('button', { class: 'primary', text: 'Publish to Bluesky' });
+        var out = h('div', { class: 'msg' });
+        btn.disabled = !writable;
+        btn.addEventListener('click', function () {
+          var payload = { handle: creds.handle.value, password: creds.pass.value };
+          if (name.value !== (rec.displayName || '')) payload.displayName = name.value;
+          if (desc.value !== (rec.description || '')) payload.description = desc.value;
+          if (pendingAvatar) payload.avatarBase64 = pendingAvatar.base64;
+          if (payload.displayName === undefined && payload.description === undefined &&
+              !payload.avatarBase64) {
+            out.className = 'msg warn'; out.textContent = 'Nothing changed here yet.';
+            return;
+          }
+          btn.disabled = true;
+          out.className = 'msg'; out.textContent = 'Publishing…';
+          call('feed/' + encodeURIComponent(key) + '/record', { body: payload })
+            .then(function (r) {
+              return r.json().then(function (b) { return { status: r.status, body: b }; });
+            }).then(function (res) {
+              btn.disabled = false;
+              // The password is dropped the moment it has been used, here too.
+              creds.pass.value = '';
+              if (res.status !== 200) {
+                out.className = 'msg bad'; out.textContent = res.body.error; return;
+              }
+              records[key] = { uri: res.body.uri, cid: res.body.cid,
+                displayName: name.value, description: desc.value,
+                avatarCid: rec.avatarCid };
+              pendingAvatar = null;
+              out.className = 'msg ok';
+              out.textContent = 'Published: ' + res.body.changed.join(', ') +
+                '. Bluesky may take a minute to show it.';
+            }).catch(function (e) {
+              btn.disabled = false;
+              out.className = 'msg bad'; out.textContent = 'Network error: ' + e.message;
+            });
+        });
+
+        el.appendChild(h('div', { class: 'row wrapx' }, [img,
+          h('div', { class: 'grow' }, [file, fileMsg])]));
+        el.appendChild(h('label', { class: 'flabel', text: 'Display name' }));
+        el.appendChild(name);
+        el.appendChild(h('label', { class: 'flabel', text: 'Description' }));
+        el.appendChild(desc);
+        el.appendChild(creds.el);
+        el.appendChild(h('div', { class: 'toolbar' }, [btn]));
+        el.appendChild(out);
+        el.appendChild(h('p', { class: 'small muted', text:
+          'This card writes to your PDS the moment you press Publish — it is not ' +
+          'part of Save below, which only touches filters.json. The AT-URI never ' +
+          'changes, so likes and subscribers are untouched.' }));
+      }
+    }
+
+    // ── the new-feed wizard
+    //
+    // Two writes behind one button: a record published to the PDS, and a feed
+    // added to filters.json. The normal Save refuses to change the set of feeds
+    // on purpose, because the routing table is built at startup — so creation
+    // is its own deliberate path, and it ends by saying a restart is still
+    // needed rather than pretending the feed is live.
+    function renderWizard(root) {
+      var open = false;
+      var toggle = h('button', { text: '+ New feed' });
+      var panel = h('div', {}, []);
+      root.appendChild(h('h2', { text: 'Create a feed' }));
+      root.appendChild(h('div', { class: 'toolbar' }, [toggle]));
+      root.appendChild(panel);
+
+      toggle.addEventListener('click', function () {
+        open = !open;
+        panel.innerHTML = '';
+        toggle.textContent = open ? '− New feed' : '+ New feed';
+        if (open) build();
+      });
+
+      function build() {
+        var rkey = h('input', { type: 'text', placeholder: 'record key, e.g. myfeed' });
+        var name = h('input', { type: 'text', placeholder: 'display name (max 24 characters)' });
+        var desc = h('textarea', { class: 'pat', spellcheck: 'false',
+                                   placeholder: 'description (optional)' });
+        var pattern = h('textarea', { class: 'pat', spellcheck: 'false',
+                                      placeholder: '\\\\b(?:topic|another topic)\\\\b' });
+        var dids = h('input', { type: 'text',
+                                placeholder: 'or author DIDs, comma separated (optional)' });
+        var file = h('input', { type: 'file', accept: 'image/png,image/jpeg' });
+        var fileMsg = h('div', { class: 'small muted' });
+        var avatar = null;
+        file.addEventListener('change', function () {
+          var f = file.files && file.files[0];
+          if (!f) { avatar = null; fileMsg.textContent = ''; return; }
+          var reader = new FileReader();
+          reader.onload = function () {
+            avatar = String(reader.result);
+            fileMsg.textContent = f.name + ' — ' + Math.round(f.size / 1024) + ' KB';
+          };
+          reader.readAsDataURL(f);
+        });
+
+        var retention = h('select', {}, []);
+        [[3, '3 hours'], [12, '12 hours'], [24, '24 hours (1 day)'],
+         [72, '72 hours (3 days)'], [168, '168 hours (7 days)']].forEach(function (o) {
+          var opt = h('option', { value: String(o[0]), text: o[1] });
+          if (o[0] === 72) opt.setAttribute('selected', 'selected');
+          retention.appendChild(opt);
+        });
+        retention.value = '72';
+
+        var creds = credsRow();
+        var btn = h('button', { class: 'primary', text: 'Publish and add' });
+        var out = h('div', { class: 'msg' });
+        btn.disabled = !writable;
+
+        btn.addEventListener('click', function () {
+          var feed = { displayName: name.value, retention:
+            { type: 'hours', value: parseInt(retention.value, 10) } };
+          if (pattern.value.trim()) {
+            feed.includePatterns = [{ pattern: pattern.value.trim() }];
+          }
+          if (dids.value.trim()) {
+            feed.includeDids = dids.value.split(/[\\s,]+/).filter(Boolean);
+          }
+          if (!feed.includePatterns && !feed.includeDids) {
+            out.className = 'msg bad';
+            out.textContent = 'A feed needs at least one pattern or one author DID — ' +
+              'without either it would match the entire firehose.';
+            return;
+          }
+          if (!confirm('Publish a new feed record at "' + rkey.value + '" and add it ' +
+                       'to the config?')) return;
+          btn.disabled = true;
+          out.className = 'msg'; out.textContent = 'Publishing…';
+          call('feeds', { body: {
+            handle: creds.handle.value, password: creds.pass.value,
+            rkey: rkey.value.trim(), displayName: name.value,
+            description: desc.value || undefined,
+            avatarBase64: avatar || undefined,
+            feed: feed, expectedDigest: digest,
+          } }).then(function (r) {
+            return r.json().then(function (b) { return { status: r.status, body: b }; });
+          }).then(function (res) {
+            btn.disabled = false;
+            creds.pass.value = '';
+            if (res.status !== 200) {
+              out.className = 'msg bad';
+              out.textContent = res.body.error + (res.body.published
+                ? '\\n\\nThe RECORD was published at ' + res.body.published +
+                  ' but the config was not written. Fix the problem and add the ' +
+                  'feed by hand, or delete that record — it has no subscribers yet.'
+                : '');
+              return;
+            }
+            digest = res.body.digest;
+            out.className = 'msg ok';
+            out.textContent = 'Created ' + res.body.rkey + '.\\n' + res.body.note;
+          }).catch(function (e) {
+            btn.disabled = false;
+            out.className = 'msg bad'; out.textContent = 'Network error: ' + e.message;
+          });
+        });
+
+        var card = h('div', { class: 'card pad' }, [
+          h('label', { class: 'flabel', text: 'Record key (rkey)' }), rkey,
+          h('p', { class: 'small muted', text:
+            'This is the feed\\'s permanent identity: it appears in its AT-URI and ' +
+            'must equal the key in filters.json. Letters, digits and . _ ~ - only. ' +
+            'It cannot be changed later without losing the feed\\'s likes.' }),
+          h('label', { class: 'flabel', text: 'Display name' }), name,
+          h('label', { class: 'flabel', text: 'Description' }), desc,
+          h('label', { class: 'flabel', text: 'Avatar' }), file, fileMsg,
+          h('label', { class: 'flabel', text: 'Keep posts' }), retention,
+          h('label', { class: 'flabel', text: 'Include pattern' }), pattern,
+          h('label', { class: 'flabel', text: 'Author DIDs' }), dids,
+          h('p', { class: 'small muted', text:
+            'One of the two is required. A feed with neither would match every ' +
+            'post on the network, and the service refuses to load such a config.' }),
+          creds.el,
+          h('div', { class: 'toolbar' }, [btn]), out,
+          h('p', { class: 'small muted', text:
+            'After this succeeds the feed is published and configured but NOT yet ' +
+            'served: the routing table is built at startup, so the service needs a ' +
+            'restart before it answers.' })
+        ]);
+        panel.appendChild(card);
+      }
     }
 
     function selectFeed(k) {

@@ -63,6 +63,7 @@ const mountAdminUi = (
       status: () => collectStatus(ctx.db, ctx.cfg, startedAt, writable),
       lab: (feed, filters, refresh) =>
         measureCandidate(ctx.db, feed, filters, { refresh }),
+      identity: { publisherDid: ctx.cfg.publisherDid, serviceDid: ctx.cfg.serviceDid },
     }),
   )
   console.log(

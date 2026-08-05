@@ -141,6 +141,11 @@ const run = async () => {
     let body: any = { ok: false }
     if (url.endsWith('/api/status')) { statusFetches++; body = STATUS }
     else if (url.endsWith('/filters') && method === 'GET') body = JSON.parse(JSON.stringify(FILTERS))
+    else if (/\/feed\/[^/]+\/record$/.test(url)) {
+      body = { ok: true, record: { uri: 'at://did:plc:p/app.bsky.feed.generator/coffee',
+        cid: 'bafy', displayName: 'Coffee, published', description: 'the real one',
+        avatarCid: 'bafcid', did: 'did:plc:s', createdAt: '2026-01-01T00:00:00Z' } }
+    }
     else if (url.endsWith('/resolve/post')) {
       resolved.push(JSON.parse(init.body).input)
       body = { ok: true, post: { uri: 'at://did:plc:mc/app.bsky.feed.post/3msc',
@@ -194,7 +199,7 @@ const run = async () => {
   check('...positioned ABOVE the blocks', pickerIdx < walk(app).indexOf(firstBlock))
 
   console.log('\n── the blocks')
-  for (const label of ['Input', 'Feed name', 'RegEx — keep #1', 'RegEx — remove #1',
+  for (const label of ['Input', 'Internal label', 'RegEx — keep #1', 'RegEx — remove #1',
                        'Remove if — item has labels', 'Remove — list of users',
                        'Pinned post', 'Sort by']) {
     check(`block: ${label}`, all.includes(label))
@@ -208,6 +213,31 @@ const run = async () => {
   check('target chips are rendered', all.includes('Post Text') && all.includes('Image Alt Text'))
   check('fixed blocks are marked as such', all.includes('fixed'))
   check('...and say replies are always dropped', all.includes('Always on'))
+
+  console.log('\n── the record card is separate from the filters')
+  check('the card is shown', all.includes('Feed record — what readers see'))
+  check('...loading the PUBLISHED name, not the internal label',
+    find(app, 'input').some((i) => i.value === 'Coffee, published'))
+  check('...and the published description',
+    find(app, 'textarea').some((t) => t.value === 'the real one'))
+  check('...with the avatar proxied through this origin, not a CDN',
+    find(app, 'img').some((i) => (i.attrs.src || '').indexOf('/admin/feed/') === 0))
+  check('...asking for an app password, and saying it is not stored',
+    all.includes('forgotten') && all.includes('APP PASSWORD'))
+  check('...with its own publish button, separate from Save',
+    walk(app).some((e) => e.textContent === 'Publish to Bluesky'))
+  check('the internal label says what it is for',
+    all.includes('Only this page and the service log ever show it'))
+
+  console.log('\n── the new-feed wizard')
+  const newBtn = walk(app).find((e) => e.textContent === '+ New feed')!
+  check('there is a way in', !!newBtn)
+  check('...closed to begin with', !all.includes('Record key (rkey)'))
+  newBtn.handlers['click']()
+  const wiz = textOf(app)
+  check('...opening the form', wiz.includes('Record key (rkey)'))
+  check('...warning the rkey is permanent', wiz.includes('cannot be changed later'))
+  check('...and that a restart is still needed', wiz.includes('restart'))
 
   console.log('\n── retention offers a fixed set of ages')
   const inputBlock = walk(app).find((e) => e.textContent === 'Input')!
@@ -271,7 +301,9 @@ const run = async () => {
 
   console.log('\n── unsaved changes freeze the refresh')
   const pane = walk(app).find((e) => e.tagName === 'DIV' && !!e.handlers['input'])!
-  const dids = find(app, 'textarea')[0]
+  // Not textarea[0] any more: the record card's description box now renders
+  // first, and grabbing that one instead produced a confusing type error.
+  const dids = find(app, 'textarea').find((t) => t.value.includes('did:plc:someone'))!
   dids.value = 'did:plc:someone\ndid:plc:another'
   dids.handlers['input']()
   pane.handlers['input']()   // the delegated listener the real DOM would bubble to
@@ -279,7 +311,8 @@ const run = async () => {
   const held = statusFetches
   await firePoll()
   check('...and nothing was refetched', statusFetches === held)
-  check('...while the edit survived', find(app, 'textarea')[0].value.includes('another'))
+  check('...while the edit survived',
+    find(app, 'textarea').some((t) => t.value.includes('another')))
 
   console.log(`\n${pass === total ? 'All' : `${pass} of`} ${total} checks passed`)
   process.exit(pass === total ? 0 : 1)

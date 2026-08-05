@@ -7,6 +7,16 @@ import { AdminAuth } from './adminAuth'
 import { StatusSnapshot, shortDigest } from './adminStatus'
 import { ADMIN_PAGE } from './adminPage'
 import { resolvePostRef } from './adminResolve'
+import {
+  login,
+  getFeedRecord,
+  fetchBlob,
+  updateFeedRecord,
+  createFeedRecord,
+  decodeImage,
+  blobLink,
+  RKEY_RE,
+} from './adminPds'
 
 // The admin surface: a config side channel, a status view, and the UI that
 // renders them.
@@ -55,6 +65,9 @@ export type AdminRouterOptions = {
   writable?: boolean
   // When present, POST /lab/measure is served from it.
   lab?: (feed: string, filters: unknown, refresh: boolean) => Promise<unknown>
+  // Whose repository the feed records live in, and which service they point at.
+  // Without it the record-editing routes are not mounted at all.
+  identity?: { publisherDid: string; serviceDid: string }
 }
 
 // Kept next to the config, so a restore of data/ carries the history with it.
@@ -87,7 +100,8 @@ const securityHeaders: express.RequestHandler = (_req, res, next) => {
   res.setHeader(
     'Content-Security-Policy',
     "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; " +
-      "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; " +
+      "frame-ancestors 'none'",
   )
   res.setHeader('X-Frame-Options', 'DENY')
   res.setHeader('X-Content-Type-Options', 'nosniff')
@@ -124,6 +138,154 @@ export const createAdminRouter = (opts: AdminRouterOptions = {}): express.Router
   const guard: express.RequestHandler = opts.auth
     ? opts.auth.guard
     : (_req, _res, next) => next()
+
+  // ── the feed RECORD: the name, description and avatar readers actually see.
+  // These live on the PDS, not in filters.json, and every write here carries
+  // its own credentials — nothing is stored. See src/adminPds.ts.
+  if (opts.identity) {
+    const { publisherDid, serviceDid } = opts.identity
+    // An avatar arrives base64 in the body, which does not fit the 1 MB limit
+    // the rest of the router uses, so these routes bring their own parser.
+    const bigJson = express.json({ limit: '4mb' })
+
+    const creds = (body: any) => {
+      const handle = String(body?.handle ?? '').trim()
+      const password = String(body?.password ?? '')
+      if (!handle || !password) {
+        throw new Error('a handle and an app password are needed for this change')
+      }
+      return { handle, password }
+    }
+    const requireWritable = (res: express.Response): boolean => {
+      if (opts.writable) return true
+      res.status(403).json({
+        ok: false,
+        error: 'this box is read-only — make record changes on the primary.',
+      })
+      return false
+    }
+
+    router.get('/feed/:rkey/record', guard, async (req, res) => {
+      try {
+        const rec = await getFeedRecord(publisherDid, req.params.rkey)
+        res.json({
+          ok: true,
+          record: {
+            uri: rec.uri,
+            cid: rec.cid,
+            displayName: rec.value?.displayName ?? '',
+            description: rec.value?.description ?? '',
+            avatarCid: blobLink(rec.value?.avatar) ?? null,
+            did: rec.value?.did ?? null,
+            createdAt: rec.value?.createdAt ?? null,
+          },
+        })
+      } catch (err: any) {
+        res.status(404).json({ ok: false, error: String(err?.message ?? err) })
+      }
+    })
+
+    // Proxied rather than linked: the page's CSP allows no external host, and
+    // pointing an <img> at the CDN would tell it who is reading this page.
+    router.get('/feed/:rkey/avatar', guard, async (req, res) => {
+      try {
+        const rec = await getFeedRecord(publisherDid, req.params.rkey)
+        const cid = blobLink(rec.value?.avatar)
+        if (!cid) {
+          res.status(404).json({ ok: false, error: 'this feed has no avatar' })
+          return
+        }
+        const bytes = await fetchBlob(publisherDid, cid)
+        res.type(bytes[0] === 0x89 ? 'image/png' : 'image/jpeg').send(bytes)
+      } catch (err: any) {
+        res.status(404).json({ ok: false, error: String(err?.message ?? err) })
+      }
+    })
+
+    router.post('/feed/:rkey/record', guard, bigJson, async (req, res) => {
+      if (!requireWritable(res)) return
+      const body: any = req.body ?? {}
+      try {
+        const { handle, password } = creds(body)
+        const avatar = decodeImage(body.avatarBase64)
+        const agent = await login(handle, password)
+        const out = await updateFeedRecord(agent, publisherDid, req.params.rkey, {
+          displayName: body.displayName,
+          description: body.description,
+          avatar,
+        })
+        console.log(`admin: feed record ${req.params.rkey} updated (${out.changed.join(', ')})`)
+        res.json({ ok: true, ...out })
+      } catch (err: any) {
+        res.status(400).json({ ok: false, error: String(err?.message ?? err) })
+      }
+    })
+
+    // The wizard. Publishing the record and adding the feed to the config are
+    // one operation from the outside, but two writes underneath, so it says
+    // exactly which of them happened when the second one fails.
+    router.post('/feeds', guard, bigJson, async (req, res) => {
+      if (!requireWritable(res)) return
+      const body: any = req.body ?? {}
+      const file = filtersPath()
+      let published: { uri: string; cid: string } | null = null
+      try {
+        const { handle, password } = creds(body)
+        const rkey = String(body.rkey ?? '').trim()
+        if (!RKEY_RE.test(rkey)) throw new Error('that record key is not usable')
+
+        const currentBuf = fs.readFileSync(file)
+        const currentDigest = shortDigest(currentBuf)
+        if (body.expectedDigest !== currentDigest) {
+          throw new Error('the config changed since it was loaded — reload and try again')
+        }
+        const current = JSON.parse(currentBuf.toString('utf8'))
+        if (current.feeds?.[rkey]) {
+          throw new Error(`filters.json already has a feed called "${rkey}"`)
+        }
+
+        // Validate the whole candidate first: filter.ts refuses a feed with no
+        // include pattern and no author DID, and finding that out AFTER
+        // publishing a record would leave one behind for nothing.
+        const candidate = JSON.parse(JSON.stringify(current))
+        candidate.feeds[rkey] = body.feed
+        validateFilters(candidate)
+
+        const avatar = decodeImage(body.avatarBase64)
+        const agent = await login(handle, password)
+        published = await createFeedRecord(agent, publisherDid, serviceDid, rkey, {
+          displayName: String(body.displayName ?? ''),
+          description: body.description,
+          avatar,
+        })
+
+        const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, 'Z')
+        backupCurrent(file, stamp)
+        writeFilters(candidate, file)
+        console.log(`admin: feed ${rkey} created — restart required to route it`)
+        res.json({
+          ok: true,
+          rkey,
+          uri: published.uri,
+          digest: shortDigest(fs.readFileSync(file)),
+          restartRequired: true,
+          note:
+            'The record is published and the config is written, but the feed is ' +
+            'NOT being served yet: the routing table is built at startup. ' +
+            'Restart the service, then check it answers.',
+        })
+      } catch (err: any) {
+        res.status(400).json({
+          ok: false,
+          error: String(err?.message ?? err),
+          // Which half happened matters: a published record with no config
+          // entry is harmless but needs cleaning up, and the operator cannot
+          // know that from a bare failure.
+          published: published ? published.uri : null,
+        })
+      }
+    })
+  }
 
   if (opts.status) {
     const status = opts.status
