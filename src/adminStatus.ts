@@ -4,6 +4,7 @@ import crypto from 'node:crypto'
 import { Database } from './db'
 import { Config } from './config'
 import { getFeedKeys, getFeedConfig } from './filter'
+import { lastGc, GC_INTERVAL_MS } from './gc'
 
 // A read-only snapshot of what this box is doing: what it serves, how far
 // behind the firehose it is, and what the config on disk currently says.
@@ -59,6 +60,13 @@ export type StatusSnapshot = {
     at: string | null
     lagSec: number | null
   }[]
+  gc: {
+    lastAt: string | null
+    agoSec: number | null
+    nextInSec: number | null
+    intervalSec: number
+    failures: number
+  }
   feeds: FeedStatus[]
 }
 
@@ -158,8 +166,21 @@ export const collectStatus = async (
     }
   }
 
+  // Retention is enforced on a timer, not on write, so "501 posts with a 500
+  // limit" is normal between sweeps — showing when the last one ran is what
+  // makes that legible instead of looking like an off-by-one.
+  const gc = lastGc()
+  const gcAgo = gc.at === undefined ? null : Math.round((now - gc.at) / 1000)
+
   return {
     generatedAt: new Date(now).toISOString(),
+    gc: {
+      lastAt: gc.at === undefined ? null : new Date(gc.at).toISOString(),
+      agoSec: gcAgo,
+      nextInSec: gcAgo === null ? null : Math.max(0, Math.round(GC_INTERVAL_MS / 1000) - gcAgo),
+      intervalSec: Math.round(GC_INTERVAL_MS / 1000),
+      failures: gc.failures,
+    },
     box: {
       name: boxName(),
       hostname: os.hostname(),

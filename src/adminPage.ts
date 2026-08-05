@@ -308,6 +308,16 @@ export const ADMIN_PAGE = `<!doctype html>
     if (!cursorCards.length) {
       cursorCards = [h('div', { class: 'card pad muted', text: 'No cursor recorded yet.' })];
     }
+    // Retention runs on a timer, not on write, so a feed sitting one post over
+    // its limit is normal between sweeps. Saying when the last one ran turns
+    // that from a suspected off-by-one into an expected wait.
+    var g = s.gc || {};
+    cursorCards.push(h('div', { class: 'card pad' }, [h('dl', {}, [
+      kv('Retention sweep', g.lastAt ? ago(g.agoSec) + ' ago' : 'not yet this run'),
+      kv('Next in', g.nextInSec == null ? '—' : ago(g.nextInSec)),
+      kv('Failed feeds', g.failures == null ? '—' : String(g.failures),
+         g.failures ? 'pill bad' : '')
+    ])]));
     root.appendChild(h('div', { class: 'grid' }, cursorCards));
 
     // ── feeds
@@ -402,6 +412,7 @@ export const ADMIN_PAGE = `<!doctype html>
     root.appendChild(toolbar);
     root.appendChild(msg);
     root.appendChild(results);
+    renderProbe(root);
     renderWhyNot(root);
     renderWizard(root);
 
@@ -873,6 +884,100 @@ export const ADMIN_PAGE = `<!doctype html>
           'part of Save below, which only touches filters.json. The AT-URI never ' +
           'changes, so likes and subscribers are untouched.' }));
       }
+    }
+
+
+    // ── probe: one regex over the stored posts, without building a whole
+    // candidate config first. This is the measurement the filter policy is
+    // written from, made cheap enough to actually do before every edit.
+    function renderProbe(root) {
+      var pat = h('input', { type: 'text', placeholder: '\\b(?:term|other term)\\b' });
+      var target = h('select', {}, []);
+      [['text|alt_text|link', 'text + alt text + links'],
+       ['text|alt_text', 'text + alt text'],
+       ['text', 'post text only']].forEach(function (o) {
+        target.appendChild(h('option', { value: o[0], text: o[1] }));
+      });
+      target.value = 'text|alt_text|link';
+      var sensitive = false;
+      var cs = checkbox('Case sensitive', false, function (on) { sensitive = on; });
+      var btn = h('button', { text: 'Count matches' });
+      var out = h('div', { class: 'msg' });
+      var body = h('div', {}, []);
+
+      function run() {
+        if (!pat.value.trim()) return;
+        btn.disabled = true; body.innerHTML = '';
+        out.className = 'msg';
+        out.textContent = 'Counting — the first run for a feed fetches its posts…';
+        call('lab/probe', { body: { feed: key, pattern: pat.value,
+          flags: sensitive ? 'u' : 'iu', target: target.value } }).then(function (r) {
+          return r.json().then(function (b) { return { status: r.status, body: b }; });
+        }).then(function (res) {
+          btn.disabled = false;
+          if (res.status !== 200) {
+            out.className = 'msg bad'; out.textContent = res.body.error; return;
+          }
+          out.textContent = ''; show(res.body.result);
+        }).catch(function (e) {
+          btn.disabled = false;
+          out.className = 'msg bad'; out.textContent = 'Network error: ' + e.message;
+        });
+      }
+      btn.addEventListener('click', run);
+      pat.addEventListener('keydown', function (e) { if (e.key === 'Enter') run(); });
+
+      function show(r) {
+        body.innerHTML = '';
+        body.appendChild(h('div', { class: 'grid' }, [
+          h('div', { class: 'card stat' }, [
+            h('div', { class: 'big', text: String(r.hits) }),
+            h('div', { class: 'lbl', text: 'posts touched' })]),
+          h('div', { class: 'card stat' }, [
+            h('div', { class: 'big', text: r.hitsPct + '%' }),
+            h('div', { class: 'lbl', text: 'of ' + r.stored + ' stored' })])
+        ]));
+        if (r.hits && r.wouldExceedAutoPurgeCap) {
+          body.appendChild(h('p', { class: 'msg warn', text:
+            'As an exclude this would be over the auto-purge cap (25 posts or 5%), ' +
+            'so the sweep would be withheld rather than applied.' }));
+        }
+        body.appendChild(h('p', { class: 'small muted', text: r.note }));
+        if (r.samples.length) {
+          var rows = r.samples.map(function (x) {
+            return h('tr', {}, [
+              h('td', { class: 'small', text: '@' + x.handle }),
+              h('td', { class: 'mono small', text: x.matched }),
+              h('td', { class: 'small', text: x.text || '(no text)' })
+            ]);
+          });
+          body.appendChild(h('div', { class: 'card wrap' }, [
+            h('table', {}, [
+              h('thead', {}, [h('tr', {}, [
+                h('th', { text: 'Author' }), h('th', { text: 'Matched' }),
+                h('th', { text: 'Text' })])]),
+              h('tbody', {}, rows)])]));
+          if (r.hits > r.samples.length) {
+            body.appendChild(h('p', { class: 'small muted',
+              text: 'Showing the first ' + r.samples.length + ' of ' + r.hits + '.' }));
+          }
+        } else {
+          body.appendChild(h('p', { class: 'small muted', text:
+            'Nothing matched. On the exclude side that means zero collateral — ' +
+            'and also that nothing has needed it yet.' }));
+        }
+      }
+
+      root.appendChild(h('h2', { text: 'Try a pattern' }));
+      root.appendChild(h('div', { class: 'card pad' }, [
+        h('div', { class: 'row wrapx' }, [pat, target, cs, btn]),
+        h('p', { class: 'small muted', text:
+          'Counts how many stored posts in THIS feed the expression touches, ' +
+          'and shows what it matched in each. As an exclude, that count is exactly ' +
+          'what would leave. An include cannot be measured this way — posts it ' +
+          'would newly bring in were never stored here.' }),
+        out, body
+      ]));
     }
 
     // ── whyNot: one post, answered from the point of view of the open feed.

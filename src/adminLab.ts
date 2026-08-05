@@ -176,6 +176,86 @@ export type LabResult = {
 const AUTO_PURGE_MAX_ABS = 25
 const AUTO_PURGE_MAX_PCT = 5
 
+export type ProbeResult = {
+  feed: string
+  stored: number
+  hits: number
+  hitsPct: number
+  wouldExceedAutoPurgeCap: boolean
+  samples: { uri: string; handle: string; text: string; matched: string }[]
+  cachedAt: string
+  note: string
+}
+
+// "How many stored posts does this regex touch at all?" — the measurement the
+// filter policy is written from ("#actionfigures touched exactly one post, zero
+// collateral"), without having to assemble a whole candidate config first.
+//
+// Note what this is NOT: it cannot say how many posts the pattern would BRING
+// IN, because posts a feed never matched were never stored. Adding a pattern to
+// the include side is unmeasurable here; adding one to the exclude side removes
+// exactly the posts counted below.
+export const probePattern = async (
+  db: Database,
+  feed: string,
+  probe: { pattern: string; flags?: string; target?: string },
+  opts: { refresh?: boolean; sampleLimit?: number } = {},
+): Promise<ProbeResult> => {
+  if (!getFeedConfig(feed)) throw new Error(`feed "${feed}" is not in the live config`)
+  const pattern = String(probe.pattern ?? '').trim()
+  if (!pattern) throw new Error('nothing to probe')
+
+  const target = (probe.target as any) ?? 'text|alt_text|link'
+  // Compile before anything else, so a broken regex is a message rather than a
+  // worker that never reports back. 'g' and 'y' are stripped: RegExp.test is
+  // stateful with them, and a probe that skipped every other post would be a
+  // very confusing way to find that out.
+  const flags = (probe.flags ?? 'iu').replace(/[gy]/g, '')
+  let re: RegExp
+  try {
+    re = new RegExp(pattern, flags)
+  } catch (err: any) {
+    throw new Error(`that is not a valid regular expression: ${err?.message ?? err}`)
+  }
+
+  const corpus = await loadCorpus(db, feed, opts.refresh)
+  const hay = corpus.posts.map((p) => (p.hay as any)[target] ?? p.hay['text|alt_text|link'])
+  await probePatterns([{ pattern, flags }], hay)
+
+  const limit = opts.sampleLimit ?? 25
+  const samples: ProbeResult['samples'] = []
+  let hits = 0
+  corpus.posts.forEach((p, i) => {
+    const m = hay[i].match(re)
+    if (!m) return
+    hits++
+    if (samples.length < limit) {
+      samples.push({
+        uri: p.uri,
+        handle: p.handle,
+        text: p.text.slice(0, 160),
+        matched: String(m[0]).slice(0, 60),
+      })
+    }
+  })
+
+  const stored = corpus.posts.length
+  const hitsPct = stored === 0 ? 0 : (hits / stored) * 100
+  return {
+    feed,
+    stored,
+    hits,
+    hitsPct: Math.round(hitsPct * 10) / 10,
+    wouldExceedAutoPurgeCap: hits > AUTO_PURGE_MAX_ABS || hitsPct > AUTO_PURGE_MAX_PCT,
+    samples,
+    cachedAt: new Date(corpus.at).toISOString(),
+    note:
+      'Counted over the posts this feed already holds. As an EXCLUDE this is ' +
+      'exactly what would leave. An include cannot be measured this way — the ' +
+      'posts it would newly bring in were never stored.',
+  }
+}
+
 export const measureCandidate = async (
   db: Database,
   feed: string,

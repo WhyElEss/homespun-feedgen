@@ -14,7 +14,7 @@ import { buildAlgos } from './algos'
 import { createAdminRouter, startAdminServer } from './admin'
 import { createAdminAuth, looksLikeHash } from './adminAuth'
 import { collectStatus } from './adminStatus'
-import { measureCandidate } from './adminLab'
+import { measureCandidate, probePattern } from './adminLab'
 import { explainPost } from './adminWhyNot'
 
 // The admin UI on the PUBLIC app. Off unless FEEDGEN_ADMIN_UI=on, because this
@@ -65,6 +65,8 @@ const mountAdminUi = (
       lab: (feed, filters, refresh) =>
         measureCandidate(ctx.db, feed, filters, { refresh }),
       whyNot: (input) => explainPost(ctx.db, input),
+      probe: (feed, p: any) =>
+        probePattern(ctx.db, feed, { pattern: p.pattern, flags: p.flags, target: p.target }),
       identity: { publisherDid: ctx.cfg.publisherDid, serviceDid: ctx.cfg.serviceDid },
     }),
   )

@@ -79,6 +79,8 @@ const STATUS = {
       writable: true,
     },
     filters: { path: '/data/filters.json', exists: true, modified: null, sizeBytes: 10, sha256: 'abc123abc123' },
+    gc: { lastAt: '2026-08-04T20:00:00.000Z', agoSec: 300, nextInSec: 3300,
+          intervalSec: 3600, failures: 0 },
     cursors: [
       { service: 'wss://jet2.example', cursor: 1, at: '2026-07-29T04:29:21.000Z', lagSec: 600000 },
       { service: 'wss://jet1.example', cursor: 2, at: '2026-08-04T20:00:00.000Z', lagSec: 5 },
@@ -135,12 +137,20 @@ const run = async () => {
   }
   const puts: any[] = []
   const resolved: string[] = []
+  const probes: any[] = []
   let statusFetches = 0
   const fetchStub = (url: string, init?: any) => {
     const method = init?.method ?? (init?.body ? 'POST' : 'GET')
     let body: any = { ok: false }
     if (url.endsWith('/api/status')) { statusFetches++; body = STATUS }
     else if (url.endsWith('/filters') && method === 'GET') body = JSON.parse(JSON.stringify(FILTERS))
+    else if (url.endsWith('/lab/probe')) {
+      probes.push(JSON.parse(init.body))
+      body = { ok: true, result: { feed: 'coffee', stored: 100, hits: 2, hitsPct: 2,
+        wouldExceedAutoPurgeCap: false, cachedAt: '2026-08-04T20:00:00.000Z',
+        note: 'Counted over the posts this feed already holds.',
+        samples: [{ uri: 'at://1', handle: 'ann', text: 'fresh coffee', matched: 'coffee' }] } }
+    }
     else if (url.endsWith('/whynot')) {
       body = { ok: true, result: {
         uri: 'at://did:plc:a/app.bsky.feed.post/1', did: 'did:plc:a', handle: 'ann.example',
@@ -242,6 +252,27 @@ const run = async () => {
     walk(app).some((e) => e.textContent === 'Publish to Bluesky'))
   check('the internal label says what it is for',
     all.includes('Only this page and the service log ever show it'))
+
+  console.log('\n── the retention sweep is reported')
+  check('the last sweep is shown', all.includes('Retention sweep'))
+  check('...with when the next one is due', all.includes('Next in'))
+
+  console.log('\n── probing a single pattern')
+  const countBtn = walk(app).find((e) => e.textContent === 'Count matches')!
+  check('there is a probe button', !!countBtn)
+  const patField = find(app, 'input').find((i) =>
+    (i.attrs.placeholder || '').indexOf('other term') >= 0)!
+  patField.value = '\\bcoffee\\b'
+  countBtn.handlers['click']()
+  await settle()
+  check('...it asks about the open feed', probes[0]?.feed === 'coffee')
+  check('...case-insensitively by default', probes[0]?.flags === 'iu')
+  check('...over text, alt and links by default',
+    probes[0]?.target === 'text|alt_text|link')
+  const probed = textOf(app)
+  check('...reporting the count and the share',
+    probed.includes('posts touched') && probed.includes('of 100 stored'))
+  check('...and what it matched in each', probed.includes('Matched'))
 
   console.log('\n── the whyNot panel')
   check('the panel is there', all.includes('Why is this post (not) in a feed?'))

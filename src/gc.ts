@@ -35,14 +35,34 @@ export const pruneFeed = async (
   `.execute(db)
 }
 
+// How often the ingest runs the sweep. Declared here, next to the work it
+// describes, so the status page and the scheduler cannot disagree about it.
+export const GC_INTERVAL_MS = 60 * 60 * 1000
+
+// When the last sweep finished, and whether any feed failed in it. Kept as
+// module state rather than plumbed through the subscription: the status page
+// wants it, and threading a field out of the ingest class to get there would
+// be a bigger change to the riskiest file than the fact is worth.
+let lastRunAt: number | undefined
+let lastFailures = 0
+
+export const lastGc = (): { at: number | undefined; failures: number } => ({
+  at: lastRunAt,
+  failures: lastFailures,
+})
+
 // Prune every configured feed. A failure on one feed is logged and does not
 // stop the others.
 export const pruneFeeds = async (db: Database): Promise<void> => {
+  let failures = 0
   for (const [feed, retention] of getRetentions()) {
     try {
       await pruneFeed(db, feed, retention)
     } catch (err) {
+      failures++
       console.error(`gc: feed ${feed} failed`, err)
     }
   }
+  lastRunAt = Date.now()
+  lastFailures = failures
 }

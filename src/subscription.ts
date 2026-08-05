@@ -1,7 +1,7 @@
 import WebSocket from 'ws'
 import { Database } from './db'
 import { matchingFeeds, getExcludeListUris } from './filter'
-import { pruneFeeds } from './gc'
+import { pruneFeeds, GC_INTERVAL_MS } from './gc'
 
 import type { MatchablePost } from './filter'
 
@@ -37,7 +37,6 @@ const LIST_REFRESH_INTERVAL_MS = 60 * 60 * 1000
 
 // Old posts are garbage-collected. How much each feed keeps is per-feed
 // config (retention: by age or by post count) — see filter.ts.
-const GC_INTERVAL_MS = 60 * 60 * 1000
 
 export class JetstreamSubscription {
   private ws?: WebSocket
