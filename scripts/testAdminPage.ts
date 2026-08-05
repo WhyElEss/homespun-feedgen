@@ -134,10 +134,11 @@ const run = async () => {
     },
   }
   const puts: any[] = []
+  let statusFetches = 0
   const fetchStub = (url: string, init?: any) => {
     const method = init?.method ?? (init?.body ? 'POST' : 'GET')
     let body: any = { ok: false }
-    if (url.endsWith('/api/status')) body = STATUS
+    if (url.endsWith('/api/status')) { statusFetches++; body = STATUS }
     else if (url.endsWith('/filters') && method === 'GET') body = JSON.parse(JSON.stringify(FILTERS))
     else if (url.endsWith('/filters') && method === 'PUT') {
       puts.push(JSON.parse(init.body))
@@ -146,14 +147,26 @@ const run = async () => {
     return Promise.resolve({ status: 200, ok: true, json: () => Promise.resolve(body) })
   }
 
+  // Capturing the scheduled callback is what lets the refresh be fired on
+  // demand: the whole point of these last checks is what a poll does to an
+  // editor someone is using.
+  const timers: Function[] = []
   const fn = new Function(
     'document', 'location', 'fetch', 'setTimeout', 'clearTimeout', 'confirm',
     script,
   )
-  fn(doc, { pathname: '/admin' }, fetchStub, () => 0, () => {}, () => true)
+  fn(doc, { pathname: '/admin' }, fetchStub,
+     (cb: Function) => timers.push(cb), () => {}, () => true)
+  const settle = async () => {
+    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r))
+  }
+  const firePoll = async () => {
+    const cb = timers.pop()
+    if (cb) cb()
+    await settle()
+  }
 
-  // Let the stubbed promises settle.
-  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r))
+  await settle()
 
   const all = textOf(app)
   console.log('\n── the status view still renders')
@@ -208,7 +221,7 @@ const run = async () => {
   console.log('\n── saving sends the WHOLE config, not just the open feed')
   const save = walk(app).find((e) => e.tagName === 'BUTTON' && e.textContent === 'Save')!
   save.handlers['click']()
-  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r))
+  await settle()
   check('a PUT was sent', puts.length === 1)
   const sent = puts[0]?.filters
   check('...carrying both feeds', Object.keys(sent?.feeds ?? {}).join() === 'coffee,radio')
@@ -216,6 +229,26 @@ const run = async () => {
     JSON.stringify(sent.feeds.coffee) === JSON.stringify(FILTERS.filters.feeds.coffee))
   check('...preserving keys the editor does not model', sent._readme !== undefined)
   check('...and the digest it loaded', puts[0]?.expectedDigest === 'abc123abc123')
+
+  console.log('\n── a status refresh must not disturb the editor')
+  const beforePicker = find(app, 'select')[0]
+  const beforeFetches = statusFetches
+  await firePoll()
+  check('the poll refetched the status', statusFetches === beforeFetches + 1)
+  check('...but did not rebuild the editor', find(app, 'select')[0] === beforePicker)
+  check('...leaving the chosen feed selected', find(app, 'select')[0].value === 'radio')
+
+  console.log('\n── unsaved changes freeze the refresh')
+  const pane = walk(app).find((e) => e.tagName === 'DIV' && !!e.handlers['input'])!
+  const dids = find(app, 'textarea')[0]
+  dids.value = 'did:plc:someone\ndid:plc:another'
+  dids.handlers['input']()
+  pane.handlers['input']()   // the delegated listener the real DOM would bubble to
+  check('the toolbar says the refresh is paused', textOf(app).includes('auto-refresh paused'))
+  const held = statusFetches
+  await firePoll()
+  check('...and nothing was refetched', statusFetches === held)
+  check('...while the edit survived', find(app, 'textarea')[0].value.includes('another'))
 
   console.log(`\n${pass === total ? 'All' : `${pass} of`} ${total} checks passed`)
   process.exit(pass === total ? 0 : 1)

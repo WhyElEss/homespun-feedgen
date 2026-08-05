@@ -130,6 +130,7 @@ export const ADMIN_PAGE = `<!doctype html>
   .cbox { display: inline-flex; align-items: center; gap: .35rem; font-size: .85rem; }
   .cbox input { margin: 0; }
   .row.wrapx { flex-wrap: wrap; margin-top: 0; }
+  .warn-text { color: var(--warn); }
 </style>
 </head>
 <body>
@@ -190,6 +191,7 @@ export const ADMIN_PAGE = `<!doctype html>
 
   function renderLogin(message) {
     app.innerHTML = '';
+    statusPane = null; editorPane = null; editor = null;
     // There is no account to choose: the password is the only credential. This
     // field exists solely so password managers have an identity to file the
     // entry under — many will not offer to save a password-only form, and some
@@ -224,8 +226,8 @@ export const ADMIN_PAGE = `<!doctype html>
     input.focus();
   }
 
-  function renderStatus(s) {
-    app.innerHTML = '';
+  function renderStatus(s, root) {
+    root.innerHTML = '';
 
     var writable = s.service.writable;
     var boxPill = h('span', {
@@ -239,7 +241,7 @@ export const ADMIN_PAGE = `<!doctype html>
     var refresh = h('button', { text: 'Refresh' });
     refresh.addEventListener('click', function () { load(); });
 
-    app.appendChild(h('header', {}, [
+    root.appendChild(h('header', {}, [
       h('h1', { text: 'feedgen admin' }),
       h('span', { class: 'mono muted', text: s.box.name }),
       boxPill,
@@ -248,8 +250,8 @@ export const ADMIN_PAGE = `<!doctype html>
     ]));
 
     // ── service identity
-    app.appendChild(h('h2', { text: 'Service' }));
-    app.appendChild(h('div', { class: 'grid' }, [
+    root.appendChild(h('h2', { text: 'Service' }));
+    root.appendChild(h('div', { class: 'grid' }, [
       h('div', { class: 'card pad' }, [h('dl', {}, [
         kv('Hostname', s.service.hostname),
         kv('Port', s.service.port),
@@ -265,7 +267,7 @@ export const ADMIN_PAGE = `<!doctype html>
     ]));
 
     // ── ingest
-    app.appendChild(h('h2', { text: 'Ingest' }));
+    root.appendChild(h('h2', { text: 'Ingest' }));
     // sub_state is keyed by the endpoint STRING, so changing
     // FEEDGEN_SUBSCRIPTION_ENDPOINT starts a fresh row and freezes the old one
     // at the moment of the switch. Nothing reads it — the service loads the
@@ -298,10 +300,10 @@ export const ADMIN_PAGE = `<!doctype html>
     if (!cursorCards.length) {
       cursorCards = [h('div', { class: 'card pad muted', text: 'No cursor recorded yet.' })];
     }
-    app.appendChild(h('div', { class: 'grid' }, cursorCards));
+    root.appendChild(h('div', { class: 'grid' }, cursorCards));
 
     // ── feeds
-    app.appendChild(h('h2', { text: 'Feeds' }));
+    root.appendChild(h('h2', { text: 'Feeds' }));
     var head = h('tr', {}, [
       h('th', { text: 'rkey' }), h('th', { text: 'Name' }),
       h('th', { class: 'num', text: 'Posts' }), h('th', { text: 'Retention' }),
@@ -329,22 +331,20 @@ export const ADMIN_PAGE = `<!doctype html>
         h('td', { class: 'small', text: f.pinnedPost ? 'yes' : '—' })
       ]);
     });
-    app.appendChild(h('div', { class: 'card wrap' }, [
+    root.appendChild(h('div', { class: 'card wrap' }, [
       h('table', {}, [h('thead', {}, [head]), h('tbody', {}, body)])
     ]));
 
     // ── config file
-    app.appendChild(h('h2', { text: 'Config' }));
-    app.appendChild(h('div', { class: 'card pad' }, [h('dl', {}, [
+    root.appendChild(h('h2', { text: 'Config' }));
+    root.appendChild(h('div', { class: 'card pad' }, [h('dl', {}, [
       kv('File', s.filters.path, 'mono small'),
       kv('Digest', s.filters.sha256 || 'unreadable', 'mono small'),
       kv('Modified', s.filters.modified ? since(s.filters.modified) : '—'),
       kv('Size', s.filters.sizeBytes == null ? '—' : s.filters.sizeBytes + ' B')
     ])]));
 
-    renderConfigEditor(s);
-
-    app.appendChild(h('footer', {
+    root.appendChild(h('footer', {
       text: 'Generated ' + s.generatedAt.replace('T', ' ').slice(0, 19) + 'Z'
     }));
   }
@@ -359,8 +359,12 @@ export const ADMIN_PAGE = `<!doctype html>
   //
   // Block ORDER carries no meaning here either — includes are OR'd against each
   // other and so are excludes — so there is nothing to drag.
-  function renderConfigEditor(s) {
+  function renderConfigEditor(s, root) {
     var full = null, digest = null, writable = false, key = null, draft = null;
+    // A snapshot of the open feed as it was loaded or last saved. Anything
+    // else means unsaved work, which freezes the status refresh.
+    var pristine = '';
+    function isDirty() { return !!draft && JSON.stringify(draft) !== pristine; }
 
     var feedSel = h('select', { 'aria-label': 'Feed to edit' });
     var picker = h('div', { class: 'picker' }, [
@@ -374,16 +378,22 @@ export const ADMIN_PAGE = `<!doctype html>
     var btnMeasure = h('button', { text: 'Measure this edit' });
     var btnSave = h('button', { class: 'primary', text: 'Save' });
     var btnReload = h('button', { text: 'Reload' });
+    var dirtyFlag = h('span', { class: 'small warn-text' });
     var toolbar = h('div', { class: 'toolbar' }, [
-      btnValidate, btnMeasure, h('span', { class: 'spacer' }, []), btnReload, btnSave
+      btnValidate, btnMeasure, dirtyFlag,
+      h('span', { class: 'spacer' }, []), btnReload, btnSave
     ]);
+    function showDirty() {
+      dirtyFlag.textContent = isDirty()
+        ? 'unsaved changes — auto-refresh paused' : '';
+    }
 
-    app.appendChild(h('h2', { text: 'Filters' }));
-    app.appendChild(picker);
-    app.appendChild(blocks);
-    app.appendChild(toolbar);
-    app.appendChild(msg);
-    app.appendChild(results);
+    root.appendChild(h('h2', { text: 'Filters' }));
+    root.appendChild(picker);
+    root.appendChild(blocks);
+    root.appendChild(toolbar);
+    root.appendChild(msg);
+    root.appendChild(results);
 
     function say(t, cls) { msg.className = 'msg ' + (cls || ''); msg.textContent = t; }
     function busy(on) {
@@ -634,17 +644,31 @@ export const ADMIN_PAGE = `<!doctype html>
       blocks.appendChild(h('div', { class: 'toolbar' }, [addInc, addExc,
         h('span', { class: 'small muted', text:
           'Order does not matter: includes are OR-ed together, and so are excludes.' })]));
+      showDirty();
     }
 
     function selectFeed(k) {
       key = k;
       draft = JSON.parse(JSON.stringify(full.feeds[k] || {}));
+      pristine = JSON.stringify(draft);
       results.innerHTML = '';
       say('');
       redraw();
+      showDirty();
     }
 
-    feedSel.addEventListener('change', function () { selectFeed(feedSel.value); });
+    feedSel.addEventListener('change', function () {
+      // Switching feeds throws the draft away, so say so rather than doing it.
+      if (isDirty() && !confirm('Discard unsaved changes to ' + key + '?')) {
+        feedSel.value = key;
+        return;
+      }
+      selectFeed(feedSel.value);
+    });
+
+    // Delegated, so every field added later is covered without wiring each one.
+    root.addEventListener('input', showDirty);
+    root.addEventListener('change', showDirty);
 
     function load() {
       busy(true); say('Loading…');
@@ -665,7 +689,10 @@ export const ADMIN_PAGE = `<!doctype html>
       }).catch(function (e) { busy(false); say('Network error: ' + e.message, 'bad'); });
     }
 
-    btnReload.addEventListener('click', load);
+    btnReload.addEventListener('click', function () {
+      if (isDirty() && !confirm('Discard unsaved changes to ' + key + '?')) return;
+      load();
+    });
 
     btnValidate.addEventListener('click', function () {
       busy(true); say('Validating…');
@@ -705,6 +732,8 @@ export const ADMIN_PAGE = `<!doctype html>
           if (res.status !== 200) { say(res.body.error, 'bad'); return; }
           digest = res.body.digest;
           full.feeds[key] = JSON.parse(JSON.stringify(draft));
+          pristine = JSON.stringify(draft);
+          showDirty();
           say('Saved. New digest ' + digest + '\\n' + res.body.note, 'ok');
         }).catch(function (e) { busy(false); say('Network error: ' + e.message, 'bad'); });
     });
@@ -758,24 +787,55 @@ export const ADMIN_PAGE = `<!doctype html>
     }
 
     load();
+    return { isDirty: isDirty };
   }
 
+  // The page is two independent panes, and the refresh only ever touches the
+  // first one. The first version re-rendered EVERYTHING every 30 seconds, which
+  // rebuilt the editor underneath whoever was using it: the feed picker snapped
+  // back to the first feed, the caret jumped out of the field being typed in,
+  // and unsaved edits vanished. A status poll must not be able to do that.
   var timer = null;
+  var statusPane = null, editorPane = null, editor = null;
+
+  function schedule() { timer = setTimeout(tick, 30000); }
+
+  function tick() {
+    // Even a status-only redraw is movement on the screen. While there are
+    // unsaved edits, hold still entirely — the editor says so in its toolbar.
+    if (editor && editor.isDirty()) { schedule(); return; }
+    load();
+  }
+
+  function panes() {
+    if (statusPane) return;
+    app.innerHTML = '';
+    statusPane = h('div', {}, []);
+    editorPane = h('div', {}, []);
+    app.appendChild(statusPane);
+    app.appendChild(editorPane);
+  }
+
   function load() {
     if (timer) { clearTimeout(timer); timer = null; }
     api('status').then(function (r) {
       if (r.status === 401) { renderLogin(); return; }
       if (!r.ok) throw new Error('status ' + r.status);
       return r.json().then(function (b) {
-        renderStatus(b.status);
-        timer = setTimeout(load, 30000);
+        panes();
+        renderStatus(b.status, statusPane);
+        // Built once. Its own Reload button is how it refetches — never a poll.
+        if (!editor) editor = renderConfigEditor(b.status, editorPane);
+        schedule();
       });
     }).catch(function (e) {
-      app.innerHTML = '';
-      app.appendChild(h('div', { class: 'card pad' }, [
-        h('p', { class: 'err', text: 'Could not load status: ' + e.message })
-      ]));
-      timer = setTimeout(load, 30000);
+      if (!statusPane) {
+        app.innerHTML = '';
+        app.appendChild(h('div', { class: 'card pad' }, [
+          h('p', { class: 'err', text: 'Could not load status: ' + e.message })
+        ]));
+      }
+      schedule();
     });
   }
 
