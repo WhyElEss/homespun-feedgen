@@ -1,6 +1,6 @@
 import crypto from 'node:crypto'
 import express from 'express'
-import { verifyTotp } from './adminTotp'
+import { verifyTotp, TotpConfig } from './adminTotp'
 
 // Password and session handling for the admin UI.
 //
@@ -123,8 +123,9 @@ export type AuthOptions = {
   // still ONE account: a wrong name and a wrong password give the same answer,
   // so it adds no way to enumerate users.
   user?: string
-  // base32. When set, a second factor is required. Absent = off.
-  totpSecret?: string
+  // Read on every login, not captured once: enabling or disabling the second
+  // factor from the UI must take effect without a restart.
+  totp?: () => TotpConfig
   // Absolute lifetime of a session, and how long it may sit idle.
   sessionTtlMs?: number
   sessionIdleMs?: number
@@ -194,9 +195,14 @@ export type AdminAuth = {
   routes: express.Router
   // Exposed for the tests and for the status page's "signed in since" line.
   sessionCount: () => number
+  // The configured account name, so routes that build an enrolment URI can
+  // label it with something meaningful.
+  user: string
+  // Re-checking the password for a step that must not ride on a session alone.
+  verifyPassword: (given: unknown) => Promise<boolean>
   // Whether the login form should ask for a code. Revealed unauthenticated,
   // which costs nothing: one login attempt would tell you the same.
-  totpRequired: boolean
+  totpRequired: () => boolean
 }
 
 export const createAdminAuth = (opts: AuthOptions): AdminAuth => {
@@ -328,8 +334,19 @@ export const createAdminAuth = (opts: AuthOptions): AdminAuth => {
 
     // Only now, with the first factor proved, does the second one get asked
     // about — a wrong password must never reveal anything about the code.
-    if (cfg.totpSecret) {
-      const verdict = verifyTotp(cfg.totpSecret, body.totp, { lastUsedStep: lastTotpStep })
+    const totp = cfg.totp ? cfg.totp() : { source: null, broken: false }
+    if (totp.broken) {
+      console.error('admin: the TOTP secret is unusable — login refused, remove the file to disable 2FA')
+      res.status(401).json({
+        ok: false,
+        error:
+          'two-factor is configured but its secret cannot be read. Delete ' +
+          'data/admin-totp.json on the box to turn it off.',
+      })
+      return
+    }
+    if (totp.secret) {
+      const verdict = verifyTotp(totp.secret, body.totp, { lastUsedStep: lastTotpStep })
       if (!verdict.ok) {
         recordFailure(ip, now)
         if (verdict.replay) {
@@ -368,6 +385,15 @@ export const createAdminAuth = (opts: AuthOptions): AdminAuth => {
     guard,
     routes,
     sessionCount: () => sessions.size,
-    totpRequired: !!cfg.totpSecret,
+    user: cfg.user,
+    verifyPassword: async (given: unknown) =>
+      typeof given === 'string' &&
+      given.length > 0 &&
+      given.length <= 1024 &&
+      (await verifyPassword(given, cfg.passwordHash)),
+    totpRequired: () => {
+      const t = cfg.totp ? cfg.totp() : { source: null, broken: false }
+      return !!t.secret || t.broken
+    },
   }
 }

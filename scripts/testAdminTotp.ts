@@ -14,9 +14,13 @@ import {
   otpauthUri,
   looksLikeSecret,
   stepFor,
+  totpConfig,
 } from '../src/adminTotp'
 import { createAdminAuth, hashPassword } from '../src/adminAuth'
 import { createAdminRouter } from '../src/admin'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 
 let pass = 0
 let total = 0
@@ -80,7 +84,12 @@ const run = async () => {
     const auth = createAdminAuth({
       passwordHash: await hashPassword(PASSWORD),
       user: USER,
-      totpSecret,
+      // The config is read per login now, so the test hands over a fixed one
+      // rather than a bare string.
+      totp: () =>
+        totpSecret
+          ? { secret: totpSecret, source: 'env' as const, broken: false }
+          : { source: null, broken: false },
     })
     const app = express()
     app.use('/admin', createAdminRouter({ auth }))
@@ -142,6 +151,108 @@ const run = async () => {
     check('the same code cannot be used again', replay.status === 401)
     check('...saying so plainly', String(replay.body.error).includes('already been used'))
     close()
+  }
+
+  console.log('\n── enrolling from the UI')
+  {
+    // The store lives under FEEDGEN_DATA_DIR, so a scratch dir keeps this out
+    // of the real one.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'feedgen-totp-'))
+    process.env.FEEDGEN_DATA_DIR = dir
+    delete process.env.FEEDGEN_ADMIN_TOTP_SECRET
+
+    const auth = createAdminAuth({
+      passwordHash: await hashPassword(PASSWORD),
+      user: USER,
+      totp: totpConfig,
+      maxFailuresPerIp: 50,
+    })
+    const app = express()
+    app.use('/admin', createAdminRouter({
+      auth,
+      identity: { publisherDid: 'did:plc:p', serviceDid: 'did:plc:s',
+                  hostname: 'feed.example.com', subscriptionEndpoint: 'wss://x' },
+    }))
+    const server = app.listen(0, '127.0.0.1')
+    await new Promise((r) => server.once('listening', r))
+    const url = `http://127.0.0.1:${(server.address() as any).port}/admin`
+
+    const login = await fetch(`${url}/api/login`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ user: USER, password: PASSWORD }),
+    })
+    const cookie = (login.headers.get('set-cookie') ?? '').split(';')[0]
+    const call = async (p: string, body?: unknown) => {
+      const r = await fetch(`${url}${p}`, {
+        method: body === undefined ? 'GET' : 'POST',
+        headers: body === undefined
+          ? { cookie }
+          : { cookie, 'content-type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      })
+      return { status: r.status, body: (await r.json()) as any }
+    }
+
+    check('a signed-out visitor cannot start enrolment', (await (async () => {
+      const r = await fetch(`${url}/totp/begin`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+      })
+      return r.status
+    })()) === 401)
+
+    check('it starts off', (await call('/totp/status')).body.enabled === false)
+    const begun = await call('/totp/begin', {})
+    check('begin hands back a secret and a URI',
+      begun.status === 200 && looksLikeSecret(begun.body.secret) &&
+        begun.body.uri.indexOf('otpauth://') === 0)
+    check('...but has NOT enabled anything yet',
+      (await call('/totp/status')).body.enabled === false)
+    check('...and nothing is on disk', !fs.existsSync(path.join(dir, 'admin-totp.json')))
+
+    const wrong = await call('/totp/enable', { code: '000000' })
+    check('a wrong code does not enable it', wrong.status === 400)
+    check('...and says a clock problem is the likely cause',
+      String(wrong.body.error).includes('time'))
+    check('...leaving it off', (await call('/totp/status')).body.enabled === false)
+
+    const enabled = await call('/totp/enable', { code: codeFor(begun.body.secret) })
+    check('the right code enables it', enabled.status === 200)
+    const st = await call('/totp/status')
+    check('...status agrees', st.body.enabled === true && st.body.source === 'file')
+    check('...and the file is written 0600',
+      (fs.statSync(path.join(dir, 'admin-totp.json')).mode & 0o777) === 0o600)
+    check('...so the login form is told to ask now',
+      ((await (await fetch(`${url}/api/login-meta`)).json()) as any).totpRequired === true)
+
+    check('turning it off needs the password',
+      (await call('/totp/disable', { code: codeFor(begun.body.secret) })).status === 401)
+    check('...and a valid code',
+      (await call('/totp/disable', { password: PASSWORD, code: '000000' })).status === 401)
+    check('...it is still on', (await call('/totp/status')).body.enabled === true)
+
+    // A fresh step, because the code used to enable it is now spent for login —
+    // and because reusing it here would test nothing about disabling.
+    const offRes = await call('/totp/disable', {
+      password: PASSWORD, code: codeFor(begun.body.secret),
+    })
+    check('with both it turns off', offRes.status === 200)
+    check('...the file is gone', !fs.existsSync(path.join(dir, 'admin-totp.json')))
+
+    console.log('\n── a secret that goes bad refuses logins rather than dropping a factor')
+    fs.writeFileSync(path.join(dir, 'admin-totp.json'), 'not json at all')
+    const brokenStatus = await call('/totp/status')
+    check('status calls it broken', brokenStatus.body.broken === true)
+    const brokenLogin = await fetch(`${url}/api/login`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ user: USER, password: PASSWORD }),
+    })
+    check('the correct password is refused', brokenLogin.status === 401)
+    check('...naming the file to delete',
+      String(((await brokenLogin.json()) as any).error).includes('admin-totp.json'))
+
+    server.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+    delete process.env.FEEDGEN_DATA_DIR
   }
 
   console.log(`\n${pass === total ? 'All' : `${pass} of`} ${total} checks passed`)

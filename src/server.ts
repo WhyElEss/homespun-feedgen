@@ -13,7 +13,7 @@ import { watchFilters } from './filter'
 import { buildAlgos } from './algos'
 import { createAdminRouter, startAdminServer } from './admin'
 import { createAdminAuth, looksLikeHash } from './adminAuth'
-import { looksLikeSecret } from './adminTotp'
+import { looksLikeSecret, totpConfig } from './adminTotp'
 import { collectStatus } from './adminStatus'
 import { measureCandidate, probePattern } from './adminLab'
 import { explainPost } from './adminWhyNot'
@@ -55,6 +55,9 @@ const mountAdminUi = (
   // Optional second factor. A malformed secret is a startup error for the same
   // reason a malformed password hash is: silently running with 2FA disabled
   // when it was meant to be on is the failure nobody notices.
+  // Only the .env form is validated at startup; a secret enrolled through the
+  // UI is validated when it is written, and a file that goes bad later refuses
+  // logins with an instruction rather than dropping to one factor.
   const totpSecret = process.env.FEEDGEN_ADMIN_TOTP_SECRET || undefined
   if (totpSecret && !looksLikeSecret(totpSecret)) {
     throw new Error(
@@ -70,10 +73,12 @@ const mountAdminUi = (
   // edit there is not merely risky, it is a change that quietly disappears.
   const writable = (process.env.FEEDGEN_ADMIN_MODE ?? 'readonly').toLowerCase() === 'rw'
 
+  const adminAuth = createAdminAuth({ passwordHash, user, totp: totpConfig })
+
   app.use(
     '/admin',
     createAdminRouter({
-      auth: createAdminAuth({ passwordHash, user, totpSecret }),
+      auth: adminAuth,
       page: true,
       writable,
       status: () => collectStatus(ctx.db, ctx.cfg, startedAt, writable),
@@ -93,7 +98,7 @@ const mountAdminUi = (
   console.log(
     `admin: UI mounted at /admin on the public app (${
       writable ? 'rw' : 'read-only'
-    }, user "${user}", ${totpSecret ? 'password + TOTP' : 'password only'})`,
+    }, user "${user}", ${totpConfig().secret ? 'password + TOTP' : 'password only'})`,
   )
 }
 

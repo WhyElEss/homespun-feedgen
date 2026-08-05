@@ -300,10 +300,14 @@ yarn adminPassword        # prompts twice, prints the .env lines
 
 #### Two factors, optionally
 
-Set `FEEDGEN_ADMIN_TOTP_SECRET` and the login also asks for a six-digit code from an authenticator app — ordinary TOTP (RFC 6238), so any app works. Off when the variable is absent.
+**Turn it on from the page**: sign in, go to **Security**, press *Set up two-factor*, add the secret to your authenticator, and confirm with a code. Ordinary TOTP (RFC 6238), so any app works. It takes effect immediately — no restart — and turning it off again asks for the password *and* a current code, so a hijacked session cannot quietly remove it.
+
+That secret lives in `data/admin-totp.json` (mode 600), not in `.env`, and the difference is deliberate. The **password** must exist before the service is ever public: set through a UI, a fresh install would offer an unprotected setup page on a public hostname and whoever found it first would own the box. A **second** factor has no such window — only someone already signed in can add one — so it can be a button, and therefore has to live where the container can write. `data/` is mounted; `.env` is not.
+
+`FEEDGEN_ADMIN_TOTP_SECRET` still works for headless setup and wins if set; the page then says so instead of offering a button that could not write it.
 
 ```bash
-yarn adminTotp            # prints the secret, an otpauth:// URI, and the .env line
+yarn adminTotp            # for the .env route: prints the secret and the line
 ```
 
 There is no QR code: drawing one needs either a dependency or a few hundred lines of encoder, and every authenticator accepts a secret typed by hand — the same fallback you get under a QR anyway. The script prints the code your app should be showing at that moment, so a clock problem surfaces during setup rather than at the login screen.
@@ -314,7 +318,9 @@ Three details that separate a working second factor from a decorative one, all c
 * **a code works once.** The step it came from is remembered, so a code read over your shoulder or left in a proxy log is refused for the rest of its window;
 * the code is checked **after** the password, never before, so a wrong password reveals nothing about it.
 
-**TOTP needs the server clock to be roughly right** — check `timedatectl` says the clock is synchronised before turning it on. **Locked out?** Delete `FEEDGEN_ADMIN_TOTP_SECRET` from `.env` and restart; the second factor is gone and the password alone works again. That escape hatch is why the secret lives in `.env` rather than in a database.
+**TOTP needs the server clock to be roughly right** — check `timedatectl` says the clock is synchronised before turning it on. **Locked out?** `rm data/admin-totp.json` and the password alone works again, with no restart. If it came from `.env`, delete the line there and restart instead.
+
+A secret that becomes unreadable refuses logins rather than quietly dropping to one factor, and the error names the file to delete — silently serving with less protection than you configured is the failure nobody notices.
 
 `FEEDGEN_ADMIN_USER` sets the account name the form must match (default `admin`). It is one account, not a user list: a wrong name and a wrong password give the same answer, so it opens no way to enumerate users.
 

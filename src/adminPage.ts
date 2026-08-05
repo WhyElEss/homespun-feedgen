@@ -302,6 +302,9 @@ export const ADMIN_PAGE = `<!doctype html>
       renderIdentity()
     ]));
 
+    root.appendChild(h('h2', { text: 'Security' }));
+    root.appendChild(renderTotp());
+
     // ── ingest
     root.appendChild(h('h2', { text: 'Ingest' }));
     // sub_state is keyed by the endpoint STRING, so changing
@@ -1529,6 +1532,142 @@ export const ADMIN_PAGE = `<!doctype html>
           'The old row stays behind, frozen, and shows up above as not in use.' })
       ]));
     }
+    return box;
+  }
+
+
+  // Enrolling a second factor, from the page. Only someone already signed in
+  // reaches this, which is the whole reason it can exist as a button — setting
+  // the FIRST factor this way would be an unprotected setup page.
+  function renderTotp() {
+    var box = h('div', { class: 'card pad' }, []);
+    var out = h('div', { class: 'msg' });
+    var body = h('div', {}, []);
+
+    function refresh() {
+      call('totp/status').then(function (r) { return r.json(); }).then(function (b) {
+        draw(b);
+      }).catch(function (e) {
+        out.className = 'msg bad'; out.textContent = 'Network error: ' + e.message;
+      });
+    }
+
+    function draw(st) {
+      body.innerHTML = '';
+      var on = st.enabled;
+      body.appendChild(h('div', { class: 'row wrapx' }, [
+        h('span', { class: 'pill ' + (st.broken ? 'bad' : on ? 'ok' : 'idle'),
+                    text: st.broken ? 'broken' : on ? 'two-factor ON' : 'two-factor off' }),
+        h('span', { class: 'small muted', text: st.source === 'env'
+          ? 'set in .env on this box'
+          : on ? 'enrolled from this page' : 'password only' })
+      ]));
+
+      if (st.broken) {
+        body.appendChild(h('p', { class: 'small warn-text', text:
+          'The stored secret cannot be read, so logins are refused rather than ' +
+          'quietly falling back to one factor. Delete ' + st.file + ' on the box.' }));
+      }
+
+      if (!st.managedHere) {
+        body.appendChild(h('p', { class: 'small muted', text:
+          'It came from .env, which this page cannot write. Change it there.' }));
+        return;
+      }
+
+      if (!on) {
+        var start = h('button', { class: 'primary', text: 'Set up two-factor' });
+        start.addEventListener('click', function () {
+          start.disabled = true;
+          out.className = 'msg'; out.textContent = 'Generating…';
+          call('totp/begin', { body: {} }).then(function (r) {
+            return r.json().then(function (b) { return { status: r.status, body: b }; });
+          }).then(function (res) {
+            start.disabled = false;
+            if (res.status !== 200) {
+              out.className = 'msg bad'; out.textContent = res.body.error; return;
+            }
+            out.textContent = ''; enrol(res.body);
+          }).catch(function (e) {
+            start.disabled = false;
+            out.className = 'msg bad'; out.textContent = 'Network error: ' + e.message;
+          });
+        });
+        body.appendChild(h('div', { class: 'toolbar' }, [start]));
+        return;
+      }
+
+      // Off requires both factors again: a hijacked session must not be able to
+      // quietly remove the thing protecting the account.
+      var pass = h('input', { type: 'password', autocomplete: 'current-password',
+                              placeholder: 'your admin password' });
+      var code = h('input', { type: 'text', inputmode: 'numeric', maxlength: '6',
+                              placeholder: 'current 6-digit code' });
+      var off = h('button', { text: 'Turn two-factor off' });
+      off.addEventListener('click', function () {
+        if (!confirm('Turn off two-factor? The password alone will get in again.')) return;
+        off.disabled = true;
+        out.className = 'msg'; out.textContent = 'Checking…';
+        call('totp/disable', { body: { password: pass.value, code: code.value } })
+          .then(function (r) {
+            return r.json().then(function (b) { return { status: r.status, body: b }; });
+          }).then(function (res) {
+            off.disabled = false; pass.value = ''; code.value = '';
+            if (res.status !== 200) {
+              out.className = 'msg bad'; out.textContent = res.body.error; return;
+            }
+            out.className = 'msg ok'; out.textContent = 'Two-factor is off.';
+            refresh();
+          }).catch(function (e) {
+            off.disabled = false;
+            out.className = 'msg bad'; out.textContent = 'Network error: ' + e.message;
+          });
+      });
+      body.appendChild(h('div', { class: 'row wrapx' }, [pass, code, off]));
+    }
+
+    function enrol(d) {
+      body.innerHTML = '';
+      body.appendChild(h('p', { class: 'small', text:
+        'Add this to your authenticator app, then enter the code it shows. ' +
+        'Nothing is stored until that code checks out.' }));
+      body.appendChild(h('p', { class: 'small muted', text: 'Secret:' }));
+      body.appendChild(h('pre', { class: 'cmd', text: d.secret }));
+      body.appendChild(h('p', { class: 'small muted', text:
+        'Or paste this URI into the app:' }));
+      body.appendChild(h('pre', { class: 'cmd', text: d.uri }));
+
+      var code = h('input', { type: 'text', inputmode: 'numeric', maxlength: '6',
+                              placeholder: '6-digit code' });
+      var confirm2 = h('button', { class: 'primary', text: 'Confirm and enable' });
+      var cancel = h('button', { text: 'Cancel' });
+      cancel.addEventListener('click', refresh);
+      confirm2.addEventListener('click', function () {
+        confirm2.disabled = true;
+        out.className = 'msg'; out.textContent = 'Checking the code…';
+        call('totp/enable', { body: { code: code.value } }).then(function (r) {
+          return r.json().then(function (b) { return { status: r.status, body: b }; });
+        }).then(function (res) {
+          confirm2.disabled = false;
+          if (res.status !== 200) {
+            out.className = 'msg bad'; out.textContent = res.body.error; return;
+          }
+          out.className = 'msg ok'; out.textContent = res.body.note;
+          refresh();
+        }).catch(function (e) {
+          confirm2.disabled = false;
+          out.className = 'msg bad'; out.textContent = 'Network error: ' + e.message;
+        });
+      });
+      body.appendChild(h('div', { class: 'row wrapx' }, [code, confirm2, cancel]));
+      body.appendChild(h('p', { class: 'small muted', text:
+        'Locked out later? Delete the file this page names under Security on ' +
+        'the box, and the password alone works again — no restart needed.' }));
+    }
+
+    box.appendChild(body);
+    box.appendChild(out);
+    refresh();
     return box;
   }
 

@@ -9,6 +9,15 @@ import { ADMIN_PAGE } from './adminPage'
 import { resolvePostRef } from './adminResolve'
 import { probeInstances } from './adminJetstream'
 import {
+  generateSecret,
+  otpauthUri,
+  verifyTotp,
+  totpConfig,
+  storeSecret,
+  clearSecret,
+  storeLocation,
+} from './adminTotp'
+import {
   login,
   getFeedRecord,
   fetchBlob,
@@ -151,7 +160,7 @@ export const createAdminRouter = (opts: AdminRouterOptions = {}): express.Router
     // required, which one login attempt would reveal anyway, and without it the
     // form has to either ask for a code that is not wanted or hide one that is.
     router.get('/api/login-meta', (_req, res) => {
-      res.json({ ok: true, totpRequired: auth.totpRequired })
+      res.json({ ok: true, totpRequired: auth.totpRequired() })
     })
   }
 
@@ -164,6 +173,8 @@ export const createAdminRouter = (opts: AdminRouterOptions = {}): express.Router
   // its own credentials — nothing is stored. See src/adminPds.ts.
   if (opts.identity) {
     const { publisherDid, serviceDid, hostname, subscriptionEndpoint } = opts.identity
+    const user = opts.auth ? opts.auth.user : 'admin'
+    const auth = opts.auth
     // An avatar arrives base64 in the body, which does not fit the 1 MB limit
     // the rest of the router uses, so these routes bring their own parser.
     const bigJson = express.json({ limit: '4mb' })
@@ -188,6 +199,118 @@ export const createAdminRouter = (opts: AdminRouterOptions = {}): express.Router
     // Both read-only, both on demand: the status snapshot deliberately makes no
     // network calls, so a slow third party can never stall the page that is
     // supposed to tell you the service is healthy.
+    // ── enrolling a second factor, from the UI
+    //
+    // Every route here is behind the guard: you must already be signed in to
+    // add a factor, which is what makes this safe to expose at all — unlike
+    // setting the FIRST factor, which would be an unprotected setup page.
+    //
+    // The candidate secret is held in memory until a code proves the
+    // authenticator actually has it. Writing it before that is how people lock
+    // themselves out of a box they only mistyped into.
+    let pending: { secret: string; at: number } | null = null
+    const PENDING_TTL_MS = 10 * 60 * 1000
+
+    router.get('/totp/status', guard, (_req, res) => {
+      const cfg = totpConfig()
+      res.json({
+        ok: true,
+        enabled: !!cfg.secret || cfg.broken,
+        broken: cfg.broken,
+        source: cfg.source,
+        // .env wins and this page cannot edit .env, so say so rather than
+        // offering a disable button that would do nothing.
+        managedHere: cfg.source !== 'env',
+        file: storeLocation(),
+      })
+    })
+
+    router.post('/totp/begin', guard, (_req, res) => {
+      const cfg = totpConfig()
+      if (cfg.source === 'env') {
+        res.status(400).json({
+          ok: false,
+          error:
+            'two-factor is configured in .env on this box. Change it there — ' +
+            'this page cannot write .env.',
+        })
+        return
+      }
+      const secret = generateSecret()
+      pending = { secret, at: Date.now() }
+      res.json({
+        ok: true,
+        secret,
+        uri: otpauthUri(secret, user, hostname),
+        note: 'Not enabled yet — enter a code from the app to confirm it works.',
+      })
+    })
+
+    router.post('/totp/enable', guard, (req, res) => {
+      const body: any = req.body ?? {}
+      if (!pending || Date.now() - pending.at > PENDING_TTL_MS) {
+        pending = null
+        res.status(400).json({ ok: false, error: 'that setup expired — start again' })
+        return
+      }
+      if (!verifyTotp(pending.secret, body.code).ok) {
+        res.status(400).json({
+          ok: false,
+          error:
+            'that code does not match. If the app shows a different number than ' +
+            'expected, this machine and your phone disagree about the time.',
+        })
+        return
+      }
+      try {
+        storeSecret(pending.secret, user)
+      } catch (err: any) {
+        res.status(500).json({ ok: false, error: String(err?.message ?? err) })
+        return
+      }
+      pending = null
+      console.log('admin: two-factor enabled')
+      res.json({ ok: true, note: 'Two-factor is on. It applies to the next sign-in.' })
+    })
+
+    // Turning it OFF asks for both factors again on purpose: a hijacked session
+    // must not be able to quietly remove the thing protecting the account.
+    router.post('/totp/disable', guard, async (req, res) => {
+      const body: any = req.body ?? {}
+      const cfg = totpConfig()
+      if (cfg.source === 'env') {
+        res.status(400).json({
+          ok: false,
+          error: 'configured in .env — remove it there and restart.',
+        })
+        return
+      }
+      if (!cfg.secret && !cfg.broken) {
+        res.status(400).json({ ok: false, error: 'two-factor is not on' })
+        return
+      }
+      // Without auth there is no password to re-check, and this route only
+      // exists to guard an action that must not ride on a session alone.
+      if (!auth) {
+        res.status(400).json({ ok: false, error: 'no password is configured to check against' })
+        return
+      }
+      if (!(await auth.verifyPassword(body.password))) {
+        res.status(401).json({ ok: false, error: 'wrong password' })
+        return
+      }
+      // A broken secret cannot be proved against, and demanding a code from it
+      // would make the file impossible to remove from here — which is exactly
+      // when you most need to.
+      if (cfg.secret && !verifyTotp(cfg.secret, body.code).ok) {
+        res.status(401).json({ ok: false, error: 'wrong or expired code' })
+        return
+      }
+      clearSecret()
+      console.warn('admin: two-factor DISABLED')
+      res.json({ ok: true })
+    })
+
     router.get('/identity', guard, async (_req, res) => {
       try {
         res.json({ ok: true, identity: await checkIdentity(serviceDid, hostname) })

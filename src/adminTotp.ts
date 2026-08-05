@@ -143,3 +143,79 @@ export const looksLikeSecret = (secret: string): boolean => {
     return false
   }
 }
+
+// ── where the secret lives
+//
+// NOT in .env, unlike the password hash, and the difference is not an
+// oversight. The password must exist BEFORE the service is public: if it were
+// set through the UI, a fresh install would offer an unprotected setup page on
+// a public hostname and whoever found it first would own the box. A second
+// factor has no such window — only someone already signed in can add one — so
+// it can be enrolled from the UI, and therefore has to live somewhere the
+// container can actually write. data/ is mounted; .env is not.
+//
+// Read per request rather than at startup, so enabling or disabling takes
+// effect immediately instead of after a restart.
+
+import fs from 'node:fs'
+import path from 'node:path'
+
+const storePath = () =>
+  path.join(process.env.FEEDGEN_DATA_DIR ?? '/data', 'admin-totp.json')
+
+export type TotpConfig = {
+  secret?: string
+  source: 'env' | 'file' | null
+  // The file exists but cannot be used. Treated as ENABLED-but-broken rather
+  // than as off: silently dropping to one factor because a file got corrupted
+  // is the failure nobody notices. The way out is deleting the file, which is
+  // the documented escape hatch anyway.
+  broken: boolean
+}
+
+export const totpConfig = (): TotpConfig => {
+  // An operator who set it in .env meant it, and the UI cannot unset it there —
+  // so env wins and the page says where it came from.
+  const fromEnv = process.env.FEEDGEN_ADMIN_TOTP_SECRET
+  if (fromEnv) {
+    return looksLikeSecret(fromEnv)
+      ? { secret: fromEnv, source: 'env', broken: false }
+      : { source: 'env', broken: true }
+  }
+  let raw: string
+  try {
+    raw = fs.readFileSync(storePath(), 'utf8')
+  } catch {
+    return { source: null, broken: false }
+  }
+  try {
+    const parsed = JSON.parse(raw)
+    if (!looksLikeSecret(parsed?.secret)) return { source: 'file', broken: true }
+    return { secret: parsed.secret, source: 'file', broken: false }
+  } catch {
+    return { source: 'file', broken: true }
+  }
+}
+
+export const storeSecret = (secret: string, account: string): void => {
+  if (!looksLikeSecret(secret)) throw new Error('refusing to store an unusable secret')
+  const file = storePath()
+  const tmp = `${file}.tmp-${process.pid}`
+  fs.writeFileSync(
+    tmp,
+    JSON.stringify({ secret, account, enabledAt: new Date().toISOString() }, null, 2) + '\n',
+    { mode: 0o600 },
+  )
+  fs.renameSync(tmp, file)
+}
+
+export const clearSecret = (): boolean => {
+  try {
+    fs.rmSync(storePath())
+    return true
+  } catch {
+    return false
+  }
+}
+
+export const storeLocation = (): string => storePath()
