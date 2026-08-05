@@ -34,30 +34,30 @@ const resolveHandle = async (handle: string): Promise<string> => {
   return did
 }
 
-export const resolvePostRef = async (input: string): Promise<ResolvedPost> => {
+// Shared with the whyNot panel, which needs the URI but its own copy of the
+// record, so the parsing lives in one place.
+export const toAtUri = async (input: string): Promise<string> => {
   const raw = String(input ?? '').trim()
   if (!raw) throw new Error('nothing to resolve')
 
-  let did: string
-  let rkey: string
-
   const asUri = AT_URI.exec(raw)
+  if (asUri) return `at://${asUri[1]}/app.bsky.feed.post/${asUri[2]}`
+
   const asUrl = POST_URL.exec(raw)
-  if (asUri) {
-    did = asUri[1]
-    rkey = asUri[2]
-  } else if (asUrl) {
-    const who = decodeURIComponent(asUrl[1])
-    did = who.startsWith('did:') ? who : await resolveHandle(who)
-    rkey = asUrl[2]
-  } else {
+  if (!asUrl) {
     throw new Error(
       'paste a post link like https://bsky.app/profile/<handle>/post/<id>, ' +
         'or an at:// URI',
     )
   }
+  const who = decodeURIComponent(asUrl[1])
+  const did = who.startsWith('did:') ? who : await resolveHandle(who)
+  return `at://${did}/app.bsky.feed.post/${asUrl[2]}`
+}
 
-  const uri = `at://${did}/app.bsky.feed.post/${rkey}`
+export const resolvePostRef = async (input: string): Promise<ResolvedPost> => {
+  const uri = await toAtUri(input)
+  const did = uri.slice('at://'.length).split('/')[0]
   const res = await fetch(`${API}/xrpc/app.bsky.feed.getPosts?uris=${encodeURIComponent(uri)}`)
   if (!res.ok) throw new Error(`could not check the post (HTTP ${res.status})`)
   const { posts } = (await res.json()) as any

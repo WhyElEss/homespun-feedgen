@@ -15,6 +15,7 @@ import { createAdminRouter, startAdminServer } from './admin'
 import { createAdminAuth, looksLikeHash } from './adminAuth'
 import { collectStatus } from './adminStatus'
 import { measureCandidate } from './adminLab'
+import { explainPost } from './adminWhyNot'
 
 // The admin UI on the PUBLIC app. Off unless FEEDGEN_ADMIN_UI=on, because this
 // app is what the Cloudflare tunnel points at — an install that does not ask
@@ -63,6 +64,7 @@ const mountAdminUi = (
       status: () => collectStatus(ctx.db, ctx.cfg, startedAt, writable),
       lab: (feed, filters, refresh) =>
         measureCandidate(ctx.db, feed, filters, { refresh }),
+      whyNot: (input) => explainPost(ctx.db, input),
       identity: { publisherDid: ctx.cfg.publisherDid, serviceDid: ctx.cfg.serviceDid },
     }),
   )

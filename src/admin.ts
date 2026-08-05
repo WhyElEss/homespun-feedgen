@@ -65,6 +65,8 @@ export type AdminRouterOptions = {
   writable?: boolean
   // When present, POST /lab/measure is served from it.
   lab?: (feed: string, filters: unknown, refresh: boolean) => Promise<unknown>
+  // When present, POST /whynot is served from it.
+  whyNot?: (input: string) => Promise<unknown>
   // Whose repository the feed records live in, and which service they point at.
   // Without it the record-editing routes are not mounted at all.
   identity?: { publisherDid: string; serviceDid: string }
@@ -391,6 +393,17 @@ export const createAdminRouter = (opts: AdminRouterOptions = {}): express.Router
       res.status(400).json({ ok: false, error: String(err?.message ?? err) })
     }
   })
+
+  if (opts.whyNot) {
+    const whyNot = opts.whyNot
+    router.post('/whynot', guard, async (req, res) => {
+      try {
+        res.json({ ok: true, result: await whyNot((req.body ?? {}).input) })
+      } catch (err: any) {
+        res.status(400).json({ ok: false, error: String(err?.message ?? err) })
+      }
+    })
+  }
 
   if (opts.lab) {
     const lab = opts.lab

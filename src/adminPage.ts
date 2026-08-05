@@ -400,6 +400,7 @@ export const ADMIN_PAGE = `<!doctype html>
     root.appendChild(toolbar);
     root.appendChild(msg);
     root.appendChild(results);
+    renderWhyNot(root);
     renderWizard(root);
 
     function say(t, cls) { msg.className = 'msg ' + (cls || ''); msg.textContent = t; }
@@ -870,6 +871,97 @@ export const ADMIN_PAGE = `<!doctype html>
           'part of Save below, which only touches filters.json. The AT-URI never ' +
           'changes, so likes and subscribers are untouched.' }));
       }
+    }
+
+    // ── whyNot: one post, every feed, with the reason each one gives.
+    function renderWhyNot(root) {
+      var input = h('input', { type: 'text',
+        placeholder: 'https://bsky.app/profile/…/post/… — or an at:// URI' });
+      var btn = h('button', { class: 'primary', text: 'Explain' });
+      var out = h('div', { class: 'msg' });
+      var body = h('div', {}, []);
+
+      function ask() {
+        var v = input.value.trim();
+        if (!v) return;
+        btn.disabled = true; body.innerHTML = '';
+        out.className = 'msg'; out.textContent = 'Looking it up…';
+        call('whynot', { body: { input: v } }).then(function (r) {
+          return r.json().then(function (b) { return { status: r.status, body: b }; });
+        }).then(function (res) {
+          btn.disabled = false;
+          if (res.status !== 200) {
+            out.className = 'msg bad'; out.textContent = res.body.error; return;
+          }
+          out.textContent = ''; show(res.body.result);
+        }).catch(function (e) {
+          btn.disabled = false;
+          out.className = 'msg bad'; out.textContent = 'Network error: ' + e.message;
+        });
+      }
+      btn.addEventListener('click', ask);
+      input.addEventListener('keydown', function (e) { if (e.key === 'Enter') ask(); });
+
+      function show(r) {
+        body.innerHTML = '';
+        var facts = h('div', { class: 'card pad' }, [h('dl', {}, [
+          kv('Author', '@' + r.handle),
+          kv('Posted', r.createdAt ? r.createdAt.replace('T', ' ').slice(0, 19) + 'Z' : '—'),
+          kv('Embed', r.embed),
+          kv('Reply', r.isReply ? 'yes — replies are always dropped' : 'no')
+        ])]);
+        body.appendChild(facts);
+        body.appendChild(h('p', { class: 'small', text: r.text || '(no text)' }));
+        if (r.alt) {
+          body.appendChild(h('p', { class: 'small muted', text: 'alt text: ' + r.alt }));
+        }
+
+        var rows = r.feeds.map(function (f) {
+          var verdict = h('td', {}, []);
+          verdict.appendChild(h('span', {
+            class: 'pill ' + (f.wouldIndex ? 'ok' : 'idle'),
+            text: f.wouldIndex ? 'matches' : 'dropped'
+          }));
+          var why = f.reason || (f.includeMatch
+            ? 'matched "' + f.includeMatch + '" on ' + f.includeTarget
+            : 'matches this feed');
+          var note = h('td', { class: 'small' }, []);
+          note.appendChild(document.createTextNode(why));
+          if (f.disagrees) {
+            note.appendChild(h('div', { class: 'small warn-text', text:
+              f.stored
+                ? 'But it IS stored — the config changed after this post was seen. ' +
+                  'auto-purge sweeps that within 5 minutes of a filter edit.'
+                : 'But it is NOT stored — most often retention pruned it, or it ' +
+                  'arrived while the config was different.' }));
+          }
+          return h('tr', {}, [
+            h('td', { class: 'mono small', text: f.key }),
+            h('td', { class: 'small', text: f.displayName || '—' }),
+            verdict,
+            h('td', { class: 'small', text: f.stored ? 'yes' : 'no' }),
+            note
+          ]);
+        });
+        body.appendChild(h('div', { class: 'card wrap' }, [
+          h('table', {}, [
+            h('thead', {}, [h('tr', {}, [
+              h('th', { text: 'rkey' }), h('th', { text: 'Feed' }),
+              h('th', { text: 'Verdict' }), h('th', { text: 'In DB' }),
+              h('th', { text: 'Why' })])]),
+            h('tbody', {}, rows)])]));
+      }
+
+      root.appendChild(h('h2', { text: 'Why is this post (not) in a feed?' }));
+      root.appendChild(h('div', { class: 'card pad' }, [
+        h('div', { class: 'row wrapx' }, [input, btn]),
+        h('p', { class: 'small muted', text:
+          'Replays the live filter over every feed at once. The verdict comes ' +
+          'from the same code the ingest runs, so it cannot disagree with it — ' +
+          'and the moderation list and the database are checked on top, since ' +
+          '"matches" and "is actually in the feed" are different questions.' }),
+        out, body
+      ]));
     }
 
     // ── the new-feed wizard

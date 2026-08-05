@@ -141,6 +141,20 @@ const run = async () => {
     let body: any = { ok: false }
     if (url.endsWith('/api/status')) { statusFetches++; body = STATUS }
     else if (url.endsWith('/filters') && method === 'GET') body = JSON.parse(JSON.stringify(FILTERS))
+    else if (url.endsWith('/whynot')) {
+      body = { ok: true, result: {
+        uri: 'at://did:plc:a/app.bsky.feed.post/1', did: 'did:plc:a', handle: 'ann.example',
+        createdAt: '2026-08-04T10:00:00.000Z', embed: 'none', isReply: false,
+        text: 'fresh coffee', alt: '',
+        feeds: [
+          { key: 'coffee', displayName: 'Coffee', stored: false, wouldIndex: true,
+            reason: null, includeMatch: 'coffee', includeTarget: 'text|alt_text',
+            mutedByList: false, disagrees: true },
+          { key: 'radio', displayName: 'Radio', stored: false, wouldIndex: false,
+            reason: 'author did:plc:a not in includeDids', includeMatch: null,
+            includeTarget: null, mutedByList: false, disagrees: false },
+        ] } }
+    }
     else if (/\/feed\/[^/]+\/record$/.test(url)) {
       body = { ok: true, record: { uri: 'at://did:plc:p/app.bsky.feed.generator/coffee',
         cid: 'bafy', displayName: 'Coffee, published', description: 'the real one',
@@ -228,6 +242,29 @@ const run = async () => {
     walk(app).some((e) => e.textContent === 'Publish to Bluesky'))
   check('the internal label says what it is for',
     all.includes('Only this page and the service log ever show it'))
+
+  console.log('\n── the whyNot panel')
+  check('the panel is there', all.includes('Why is this post (not) in a feed?'))
+  // Both the pin field and this one accept a post link, and the pin block is
+  // declared later in this file — so pick by position, not by identity.
+  const linkFields = find(app, 'input').filter((i) =>
+    (i.attrs.placeholder || '').indexOf('bsky.app/profile') >= 0)
+  const whyInput = linkFields[linkFields.length - 1]
+  const explain = walk(app).find((e) => e.textContent === 'Explain')!
+  check('...with a field and a button', !!whyInput && !!explain)
+  whyInput.value = 'https://bsky.app/profile/ann.example/post/1'
+  explain.handlers['click']()
+  await settle()
+  const why = textOf(app)
+  check('...answering for every feed at once',
+    why.includes('coffee') && why.includes('Radio'))
+  check('...showing the verdict per feed',
+    why.includes('matches') && why.includes('dropped'))
+  check('...naming what the include matched', why.includes('matched "coffee"'))
+  check('...and the reason a feed said no',
+    why.includes('not in includeDids'))
+  check('...flagging when the DB and the filter disagree',
+    why.includes('NOT stored'))
 
   console.log('\n── the new-feed wizard')
   const newBtn = walk(app).find((e) => e.textContent === '+ New feed')!
