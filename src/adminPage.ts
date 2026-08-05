@@ -28,11 +28,14 @@ export const ADMIN_PAGE = `<!doctype html>
     }
   }
   * { box-sizing: border-box; }
+  /* One gutter, used on both sides and nowhere else, so the page cannot end up
+     with more air on one edge than the other. */
+  :root { --gutter: 1rem; }
   body {
-    margin: 0; padding: 1.5rem 1rem 3rem; background: var(--bg); color: var(--fg);
+    margin: 0; padding: 1.5rem var(--gutter) 3rem; background: var(--bg); color: var(--fg);
     font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   }
-  main { max-width: 62rem; margin: 0 auto; }
+  main { max-width: 62rem; margin: 0 auto; width: 100%; }
   h1 { font-size: 1.1rem; margin: 0; letter-spacing: .01em; }
   h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em;
        color: var(--muted); margin: 2rem 0 .6rem; font-weight: 600; }
@@ -53,7 +56,11 @@ export const ADMIN_PAGE = `<!doctype html>
   th { color: var(--muted); font-weight: 600; font-size: .78rem;
        text-transform: uppercase; letter-spacing: .05em; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .wrap { overflow-x: auto; }
+  .wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  /* A table squeezed into a phone stops being a table: the columns collapse to
+     a letter apiece. Give it a floor and let its own container scroll — the
+     card still lines up with everything else, only its contents slide. */
+  .wrap table { min-width: 30rem; }
   .pill { display: inline-block; padding: .1rem .5rem; border-radius: 999px;
           font-size: .75rem; font-weight: 600; border: 1px solid currentColor; }
   .pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); } .pill.bad { color: var(--bad); }
@@ -150,13 +157,18 @@ export const ADMIN_PAGE = `<!doctype html>
   .kv { flex-wrap: wrap; }
   .kv dt { flex: 0 0 auto; }
   .kv dd { min-width: 0; overflow-wrap: anywhere; }
-  th, td, .mono, .small { overflow-wrap: anywhere; }
+  /* Cells wrap at word boundaries and never mid-word: 'anywhere' here is what
+     shattered "network" into "networ / k" and "SAMPLED" into three lines. Only
+     the key/value rows, where a DID genuinely has nowhere else to break, keep
+     the stronger rule. */
+  th, td { overflow-wrap: break-word; }
   .row > *, .toolbar > *, .trow > *, .picker > * { min-width: 0; }
   input, select, textarea, img, pre { max-width: 100%; }
   pre.cmd { white-space: pre-wrap; word-break: break-all; }
 
   @media (max-width: 40rem) {
-    body { padding: 1rem .7rem 3rem; }
+    :root { --gutter: .8rem; }
+    body { padding: 1rem var(--gutter) 3rem; }
     /* Stacked, so a long value gets the full width instead of fighting its
        label for it across a flex row. */
     .kv { flex-direction: column; align-items: flex-start; gap: .05rem; }
@@ -164,8 +176,10 @@ export const ADMIN_PAGE = `<!doctype html>
     .grid { grid-template-columns: 1fr; }
     .picker { flex-wrap: wrap; }
     .picker select { max-width: 100%; }
-    table { font-size: .8rem; }
-    th, td { padding: .45rem .4rem; }
+    table { font-size: .82rem; }
+    th, td { padding: .5rem .45rem; }
+    /* Narrower floor on a phone, so the scroll is short rather than absent. */
+    .wrap table { min-width: 26rem; }
     h2 { margin-top: 1.5rem; }
     img.qr { width: 100%; max-width: 260px; height: auto; }
   }

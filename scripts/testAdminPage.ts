@@ -412,7 +412,17 @@ const run = async () => {
   ]) {
     check(`css keeps: ${rule.slice(0, 46)}`, css.includes(rule))
   }
-  check('long unbroken strings may break', css.includes('overflow-wrap: anywhere'))
+  check('a value with nowhere to break still may', css.includes('.kv dd { min-width: 0; overflow-wrap: anywhere; }'))
+  // The regression this replaced: 'anywhere' on cells crushed the table into
+  // the viewport and broke words by the letter instead of scrolling.
+  check('table cells break at words, never mid-word',
+    css.includes('th, td { overflow-wrap: break-word; }') &&
+      !css.includes('th, td, .mono'))
+  check('a table keeps a floor so its container scrolls',
+    css.includes('.wrap table { min-width: 30rem; }'))
+  check('the page uses one gutter for both edges',
+    css.includes('padding: 1.5rem var(--gutter) 3rem') &&
+      css.includes('padding: 1rem var(--gutter) 3rem'))
   check('nothing may exceed its container',
     css.includes('input, select, textarea, img, pre { max-width: 100%; }'))
 
