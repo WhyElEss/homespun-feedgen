@@ -522,25 +522,58 @@ export const ADMIN_PAGE = `<!doctype html>
       // Input — the closest thing this engine has to SkyFeed's source block.
       var retType = (draft.retention && draft.retention.type) || 'hours';
       var retVal = (draft.retention && draft.retention.value) || 72;
-      var num = h('input', { type: 'number', min: '1', class: 'num' });
-      num.value = String(retVal);
-      num.addEventListener('input', function () {
-        var v = parseInt(num.value, 10);
-        if (v > 0) draft.retention = { type: retType, value: v };
-      });
       var unit = h('select', {}, []);
-      [['hours', 'hours old'], ['count', 'newest posts']].forEach(function (o) {
+      [['hours', 'by age'], ['count', 'by count']].forEach(function (o) {
         var opt = h('option', { value: o[0], text: o[1] });
         if (o[0] === retType) opt.setAttribute('selected', 'selected');
         unit.appendChild(opt);
       });
       unit.addEventListener('change', function () {
-        draft.retention = { type: unit.value, value: parseInt(num.value, 10) || 72 };
+        // The two units do not convert into each other — 500 posts is not 500
+        // hours — so switching picks that unit's usual value rather than
+        // carrying a number across that would mean something else.
+        draft.retention = unit.value === 'hours'
+          ? { type: 'hours', value: 72 }
+          : { type: 'count', value: 500 };
         redraw();
       });
+
+      var value;
+      if (retType === 'hours') {
+        var LABEL = { 3: '3 hours', 12: '12 hours', 24: '24 hours (1 day)',
+                      72: '72 hours (3 days)', 168: '168 hours (7 days)' };
+        var choices = [3, 12, 24, 72, 168];
+        // Never quietly round a value that is already on disk: an unlisted one
+        // gets its own option instead, so opening the page cannot change it.
+        if (choices.indexOf(retVal) < 0) {
+          choices.push(retVal);
+          choices.sort(function (a, b) { return a - b; });
+        }
+        value = h('select', {}, []);
+        choices.forEach(function (v) {
+          var opt = h('option', { value: String(v),
+            text: LABEL[v] || (v + ' hours (kept as set)') });
+          if (v === retVal) opt.setAttribute('selected', 'selected');
+          value.appendChild(opt);
+        });
+        value.value = String(retVal);
+        value.addEventListener('change', function () {
+          draft.retention = { type: 'hours', value: parseInt(value.value, 10) };
+        });
+      } else {
+        value = h('input', { type: 'number', min: '1', class: 'num' });
+        value.value = String(retVal);
+        value.addEventListener('input', function () {
+          var v = parseInt(value.value, 10);
+          if (v > 0) draft.retention = { type: 'count', value: v };
+        });
+      }
+
       blocks.appendChild(block('Input', [
         h('div', { class: 'row wrapx' }, [
-          h('span', { text: 'Entire network, continuously. Keep' }), num, unit
+          h('span', { text: 'Entire network, continuously. Keep' }), unit, value,
+          h('span', { class: 'small muted',
+            text: retType === 'count' ? 'newest posts' : '' })
         ]),
         h('p', { class: 'small muted', text:
           'There is no time window on the source: this box reads the firehose ' +
@@ -605,15 +638,59 @@ export const ADMIN_PAGE = `<!doctype html>
           'is not blocked immediately — and adding one never removes posts ' +
           'already stored.' })]));
 
-      var pin = h('input', { type: 'text', placeholder: 'at://…/app.bsky.feed.post/… (optional)' });
+      var pin = h('input', { type: 'text',
+        placeholder: 'https://bsky.app/profile/…/post/… — or an at:// URI' });
       pin.value = draft.pinnedPost || '';
-      pin.addEventListener('input', function () {
-        if (pin.value) draft.pinnedPost = pin.value.trim(); else delete draft.pinnedPost;
+      var pinMsg = h('div', { class: 'small muted' });
+      var pinBtn = h('button', { text: 'Resolve' });
+      function applyPin(v) {
+        if (v) draft.pinnedPost = v; else delete draft.pinnedPost;
+      }
+      pin.addEventListener('input', function () { applyPin(pin.value.trim()); });
+      function resolvePin() {
+        var v = pin.value.trim();
+        if (!v) { pinMsg.className = 'small muted'; pinMsg.textContent = ''; return; }
+        pinBtn.disabled = true;
+        pinMsg.className = 'small muted'; pinMsg.textContent = 'Resolving…';
+        call('resolve/post', { body: { input: v } }).then(function (r) {
+          return r.json().then(function (b) { return { status: r.status, body: b }; });
+        }).then(function (res) {
+          pinBtn.disabled = false;
+          if (res.status !== 200) {
+            pinMsg.className = 'small warn-text'; pinMsg.textContent = res.body.error;
+            return;
+          }
+          var post = res.body.post;
+          pin.value = post.uri; applyPin(post.uri); showDirty();
+          if (post.exists) {
+            pinMsg.className = 'small muted';
+            pinMsg.textContent = '@' + post.handle + ' — ' + post.text;
+          } else {
+            pinMsg.className = 'small warn-text';
+            pinMsg.textContent =
+              'That URI is well formed, but there is no such post right now. A ' +
+              'pin pointing at a deleted post is dropped during hydration with ' +
+              'nothing in the log — it simply never appears.';
+          }
+        }).catch(function (e) {
+          pinBtn.disabled = false;
+          pinMsg.className = 'small warn-text';
+          pinMsg.textContent = 'Network error: ' + e.message;
+        });
+      }
+      pinBtn.addEventListener('click', resolvePin);
+      // Blur after pasting a link resolves it without being asked; an at:// URI
+      // that is already correct is left alone.
+      pin.addEventListener('change', function () {
+        if (/^https?:/i.test(pin.value.trim())) resolvePin();
       });
-      blocks.appendChild(block('Pinned post', [pin,
+      blocks.appendChild(block('Pinned post', [
+        h('div', { class: 'row wrapx' }, [pin, pinBtn]), pinMsg,
         h('p', { class: 'small muted', text:
-          'Served first on page 1 with the Pinned badge. Whether it survives ' +
-          'un-pinning depends on whether it matches this feed on its own.' })]));
+          'Paste the link straight from the app — the handle in it is resolved to ' +
+          'a DID here, because the config stores at:// URIs. Served first on page ' +
+          '1 with the Pinned badge. Whether it survives un-pinning depends on ' +
+          'whether it matches this feed on its own.' })]));
 
       blocks.appendChild(block('Remove if — item is a reply',
         [h('p', { class: 'small muted', text:

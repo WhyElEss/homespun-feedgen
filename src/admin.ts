@@ -6,6 +6,7 @@ import { validateFilters, writeFilters } from './filter'
 import { AdminAuth } from './adminAuth'
 import { StatusSnapshot, shortDigest } from './adminStatus'
 import { ADMIN_PAGE } from './adminPage'
+import { resolvePostRef } from './adminResolve'
 
 // The admin surface: a config side channel, a status view, and the UI that
 // renders them.
@@ -214,6 +215,16 @@ export const createAdminRouter = (opts: AdminRouterOptions = {}): express.Router
           'auto-purge replay the filter over stored posts within 5 minutes, and ' +
           'the standby picks the file up within 10.',
       })
+    } catch (err: any) {
+      res.status(400).json({ ok: false, error: String(err?.message ?? err) })
+    }
+  })
+
+  // Paste a bsky.app link, get the at:// URI the config wants. Guarded like
+  // everything else: it is a lookup against a third party made by this box.
+  router.post('/resolve/post', guard, async (req, res) => {
+    try {
+      res.json({ ok: true, post: await resolvePostRef((req.body ?? {}).input) })
     } catch (err: any) {
       res.status(400).json({ ok: false, error: String(err?.message ?? err) })
     }

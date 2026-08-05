@@ -134,12 +134,18 @@ const run = async () => {
     },
   }
   const puts: any[] = []
+  const resolved: string[] = []
   let statusFetches = 0
   const fetchStub = (url: string, init?: any) => {
     const method = init?.method ?? (init?.body ? 'POST' : 'GET')
     let body: any = { ok: false }
     if (url.endsWith('/api/status')) { statusFetches++; body = STATUS }
     else if (url.endsWith('/filters') && method === 'GET') body = JSON.parse(JSON.stringify(FILTERS))
+    else if (url.endsWith('/resolve/post')) {
+      resolved.push(JSON.parse(init.body).input)
+      body = { ok: true, post: { uri: 'at://did:plc:mc/app.bsky.feed.post/3msc',
+        did: 'did:plc:mc', handle: 'mcwyrm.bsky.social', text: 'a pinned post', exists: true } }
+    }
     else if (url.endsWith('/filters') && method === 'PUT') {
       puts.push(JSON.parse(init.body))
       body = { ok: true, digest: 'newdigest123', note: 'saved' }
@@ -202,6 +208,31 @@ const run = async () => {
   check('target chips are rendered', all.includes('Post Text') && all.includes('Image Alt Text'))
   check('fixed blocks are marked as such', all.includes('fixed'))
   check('...and say replies are always dropped', all.includes('Always on'))
+
+  console.log('\n── retention offers a fixed set of ages')
+  const inputBlock = walk(app).find((e) => e.textContent === 'Input')!
+  const retSelects = find(app, 'select')
+  const ages = retSelects.find((sel) =>
+    sel.children.some((o) => o.textContent.indexOf('168 hours') === 0))
+  check('the age list is a dropdown', !!ages && !!inputBlock)
+  check('...offering exactly 3 / 12 / 24 / 72 / 168',
+    ages!.children.map((o) => o.attrs.value).join(',') === '3,12,24,72,168',
+    ages!.children.map((o) => o.attrs.value).join(','))
+  check('...with the feed\'s own value selected', ages!.value === '72')
+  check('...spelling the long ones out in days',
+    ages!.children.some((o) => o.textContent === '72 hours (3 days)'))
+
+  console.log('\n── a pin can be pasted as a bsky.app link')
+  const pinInput = find(app, 'input').find((i) =>
+    (i.attrs.placeholder || '').indexOf('bsky.app/profile') >= 0)!
+  check('the field asks for a link, not a URI', !!pinInput)
+  pinInput.value = 'https://bsky.app/profile/mcwyrm.bsky.social/post/3mscgyghtjc2f'
+  pinInput.handlers['change']()
+  await settle()
+  check('...and blurring resolves it', resolved.length === 1)
+  check('...replacing the field with the at:// URI',
+    pinInput.value === 'at://did:plc:mc/app.bsky.feed.post/3msc', pinInput.value)
+  check('...showing whose post it is', textOf(app).includes('@mcwyrm.bsky.social'))
 
   console.log('\n── only the selected feed is shown')
   check('the other feed is not in the editor', !all.includes('did:plc:someone'))
