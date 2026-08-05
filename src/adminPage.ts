@@ -891,7 +891,11 @@ export const ADMIN_PAGE = `<!doctype html>
     // candidate config first. This is the measurement the filter policy is
     // written from, made cheap enough to actually do before every edit.
     function renderProbe(root) {
-      var pat = h('input', { type: 'text', placeholder: '\\b(?:term|other term)\\b' });
+      // Four backslashes: the template literal turns them into two, and only
+      // then does JS read \\b as an escaped backslash. Written with two, the
+      // page ends up with \b — the BACKSPACE character — and the field shows
+      // two little boxes instead of a word boundary.
+      var pat = h('input', { type: 'text', placeholder: '\\\\b(?:term|other term)\\\\b' });
       var target = h('select', {}, []);
       [['text|alt_text|link', 'text + alt text + links'],
        ['text|alt_text', 'text + alt text'],

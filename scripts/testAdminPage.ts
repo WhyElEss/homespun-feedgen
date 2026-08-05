@@ -310,6 +310,20 @@ const run = async () => {
   check('...warning the rkey is permanent', wiz.includes('cannot be changed later'))
   check('...and that a restart is still needed', wiz.includes('restart'))
 
+  // A \b written with one backslash too few stops being a word boundary and
+  // becomes the BACKSPACE character, which the browser draws as a little box.
+  // Nothing else notices: the page parses, renders and behaves normally.
+  console.log('\n── nothing invisible leaks into the UI')
+  const CTRL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/
+  const dirty = walk(app).filter(
+    (e) => CTRL.test(e.attrs.placeholder || '') || CTRL.test(e.textContent || ''),
+  )
+  check(
+    'no control characters in any label or placeholder',
+    dirty.length === 0,
+    dirty.map((e) => JSON.stringify(e.attrs.placeholder || e.textContent)).join(' '),
+  )
+
   console.log('\n── retention offers a fixed set of ages')
   const inputBlock = walk(app).find((e) => e.textContent === 'Input')!
   const retSelects = find(app, 'select')
