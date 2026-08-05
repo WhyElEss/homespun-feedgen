@@ -105,6 +105,7 @@ const FILTERS = {
     feeds: {
       coffee: {
         displayName: 'Coffee',
+        _note: 'a key the editor does not model',
         includePatterns: [{ pattern: '\\bcoffee\\b', comment: 'the topic' }],
         excludePatterns: [{ pattern: '\\bdiscount\\b' }],
         excludeListUri: 'at://did:plc:x/app.bsky.graph.list/abc',
@@ -259,14 +260,17 @@ const run = async () => {
   const picker = selects[0]
   check('...with an option per feed', picker.children.length === 2,
     picker.children.map((o) => o.textContent).join(' / '))
-  check('...naming the rkey as well as the display name',
-    picker.children[0].textContent.includes('coffee'))
+  // A <select> is as wide as its longest option, which is what pushed the page
+  // off a phone screen. The name alone; the rest goes on the line below.
+  check('...labelled by name only', picker.children[0].textContent === 'Coffee')
+  check('...with the rkey and count underneath it instead',
+    textOf(app).includes('coffee — 100 posts stored'))
   const pickerIdx = walk(app).indexOf(picker)
   const firstBlock = walk(app).find((e) => e.className.includes('block'))!
   check('...positioned ABOVE the blocks', pickerIdx < walk(app).indexOf(firstBlock))
 
   console.log('\n── the blocks')
-  for (const label of ['Input', 'Internal label', 'RegEx — keep #1', 'RegEx — remove #1',
+  for (const label of ['Input', 'RegEx — keep #1', 'RegEx — remove #1',
                        'Remove if — item has labels', 'Remove — list of users',
                        'Pinned post', 'Sort by']) {
     check(`block: ${label}`, all.includes(label))
@@ -293,8 +297,8 @@ const run = async () => {
     all.includes('forgotten') && all.includes('APP PASSWORD'))
   check('...with its own publish button, separate from Save',
     walk(app).some((e) => e.textContent === 'Publish to Bluesky'))
-  check('the internal label says what it is for',
-    all.includes('Only this page and the service log ever show it'))
+  check('there is no field for the internal label any more',
+    !find(app, 'input').some((i) => (i.attrs.placeholder || '') === 'label for logs'))
 
   console.log('\n── the Jetstream instances panel')
   check('the configured endpoint is listed before any measurement',
@@ -456,6 +460,22 @@ const run = async () => {
     JSON.stringify(sent.feeds.coffee) === JSON.stringify(FILTERS.filters.feeds.coffee))
   check('...preserving keys the editor does not model', sent._readme !== undefined)
   check('...and the digest it loaded', puts[0]?.expectedDigest === 'abc123abc123')
+
+  // The editor stopped showing displayName; it must not have stopped saving it.
+  // Same for any key it never modelled — the draft is a copy of the whole feed.
+  picker.value = 'coffee'
+  picker.handlers['change']()
+  await settle()
+  save.handlers['click']()
+  await settle()
+  const openFeed = puts[puts.length - 1]?.filters?.feeds?.coffee
+  check('the open feed keeps a name the editor no longer shows',
+    openFeed?.displayName === 'Coffee')
+  check('...and keeps keys it never modelled', openFeed?._note !== undefined)
+  // Put the picker back where the later sections expect to find it.
+  picker.value = 'radio'
+  picker.handlers['change']()
+  await settle()
 
   console.log('\n── measuring an edit')
   const measure = walk(app).find((e) => e.textContent === 'Measure this edit')!

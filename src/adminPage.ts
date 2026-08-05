@@ -110,7 +110,10 @@ export const ADMIN_PAGE = `<!doctype html>
   input.num { width: 6rem; }
   .picker { display: flex; align-items: center; gap: .6rem; margin-bottom: .8rem; }
   .picker label { color: var(--muted); font-size: .82rem; }
-  .picker select { flex: 1; max-width: 32rem; }
+  /* min-width: 0 is the whole fix — without it a flex item refuses to shrink
+     below its content, and a <select> counts its longest option as content. */
+  .picker select { flex: 1; min-width: 0; max-width: 32rem; }
+  .pickernote { margin: -.4rem 0 .8rem; }
   .block { margin-bottom: .6rem; }
   .bhead { display: flex; align-items: center; gap: .5rem; margin-bottom: .55rem; }
   .bhead .spacer { flex: 1; }
@@ -422,8 +425,12 @@ export const ADMIN_PAGE = `<!doctype html>
     function isDirty() { return !!draft && JSON.stringify(draft) !== pristine; }
 
     var feedSel = h('select', { 'aria-label': 'Feed to edit' });
-    var picker = h('div', { class: 'picker' }, [
-      h('label', { text: 'Editing feed', for: 'feedsel' }), feedSel
+    var pickerNote = h('div', { class: 'small muted pickernote' });
+    var picker = h('div', {}, [
+      h('div', { class: 'picker' }, [
+        h('label', { text: 'Editing feed', for: 'feedsel' }), feedSel
+      ]),
+      pickerNote,
     ]);
     var blocks = h('div', {}, []);
     var msg = h('div', { class: 'msg' });
@@ -640,14 +647,10 @@ export const ADMIN_PAGE = `<!doctype html>
           'enforces it.' })
       ]));
 
-      var label = h('input', { type: 'text', placeholder: 'label for logs' });
-      label.value = draft.displayName || '';
-      label.addEventListener('input', function () {
-        if (label.value) draft.displayName = label.value; else delete draft.displayName;
-      });
-      blocks.appendChild(block('Internal label', [label, h('p', { class: 'small muted', text:
-        'Only this page and the service log ever show it. The name readers see is ' +
-        'in the card above, which publishes to your PDS.' })]));
+      // No editor for filters.json's displayName. It only labels log lines and
+      // the picker above, so offering a field invited renaming a feed for
+      // nobody's benefit. The value already on disk is carried through
+      // untouched, because draft starts as a copy of the whole feed object.
 
       (draft.includePatterns || []).forEach(function (p, i) {
         blocks.appendChild(patternBlock(p, 'include', i));
@@ -1300,6 +1303,8 @@ export const ADMIN_PAGE = `<!doctype html>
 
     function selectFeed(k) {
       key = k;
+      var stat = (s.feeds || []).filter(function (x) { return x.key === k; })[0];
+      pickerNote.textContent = k + (stat ? ' — ' + stat.rows + ' posts stored' : '');
       draft = JSON.parse(JSON.stringify(full.feeds[k] || {}));
       pristine = JSON.stringify(draft);
       results.innerHTML = '';
@@ -1332,8 +1337,12 @@ export const ADMIN_PAGE = `<!doctype html>
         feedSel.innerHTML = '';
         Object.keys(full.feeds || {}).forEach(function (k) {
           var f = (s.feeds || []).filter(function (x) { return x.key === k; })[0];
+          // Name only. A <select> is as wide as its longest option, so rkeys
+          // and post counts in here pushed the whole page off a phone screen —
+          // and nobody picks a feed by its record key anyway. Both facts live
+          // on the line underneath instead.
           feedSel.appendChild(h('option', { value: k,
-            text: (full.feeds[k].displayName || k) + ' — ' + k + (f ? ' — ' + f.rows + ' posts' : '') }));
+            text: full.feeds[k].displayName || k }));
         });
         selectFeed(feedSel.value || Object.keys(full.feeds || {})[0]);
         say('Loaded, digest ' + digest + (writable ? '' : ' — this box is read-only'),
