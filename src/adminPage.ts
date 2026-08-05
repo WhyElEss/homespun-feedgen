@@ -31,19 +31,19 @@ export const ADMIN_PAGE = `<!doctype html>
   /* One gutter, used on both sides and nowhere else, so the page cannot end up
      with more air on one edge than the other. */
   :root { --gutter: 1rem; }
-  /* The PAGE never scrolls sideways; only a table inside its own card does.
-     This is a guard, not a substitute for the rules further down — everything
-     is sized to fit anyway. It is here because this page is built by script
-     AFTER the first layout: iOS measures the empty document, JS then injects a
-     table wider than the screen, and Safari keeps the wider layout viewport
-     rather than recomputing it. The page opens looking slightly zoomed in and
-     can be dragged left and right until a pinch forces the recalculation. */
-  html, body { overflow-x: hidden; max-width: 100%; }
+  /* iOS Safari IGNORES overflow-x: hidden on html and body — a long-standing,
+     well-documented quirk, and the reason an earlier attempt at exactly this
+     did nothing. The documented remedy is to put it on a wrapper element
+     instead, which is what <main> is here. Kept on body as well for the
+     browsers that do honour it.
+     https://www.codestudy.net/blog/disabling-horizontal-scroll-on-an-iphone-website/ */
+  html, body { max-width: 100%; overflow-x: hidden; }
   body {
     margin: 0; padding: 1.5rem var(--gutter) 3rem; background: var(--bg); color: var(--fg);
     font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   }
-  main { max-width: 62rem; margin: 0 auto; width: 100%; }
+  main { max-width: 62rem; margin: 0 auto; width: 100%;
+         position: relative; overflow-x: hidden; overscroll-behavior-x: none; }
   h1 { font-size: 1.1rem; margin: 0; letter-spacing: .01em; }
   h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em;
        color: var(--muted); margin: 2rem 0 .6rem; font-weight: 600; }
@@ -66,8 +66,11 @@ export const ADMIN_PAGE = `<!doctype html>
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   /* width AND max-width, so the card is sized by its container and never by the
      table inside it — that is what keeps the scrolling local to the card. */
-  .wrap { overflow-x: auto; -webkit-overflow-scrolling: touch;
-          width: 100%; max-width: 100%; }
+  /* Deliberately without the legacy webkit momentum-scroll declaration: it has
+     been unnecessary since iOS 13 made momentum the default, and it is
+     documented as able to override overflow-x on ancestors — the opposite of
+     what this card wants. The test asserts it stays absent. */
+  .wrap { overflow-x: auto; width: 100%; max-width: 100%; }
   /* A table squeezed into a phone stops being a table: the columns collapse to
      a letter apiece. Give it a floor and let its own container scroll — the
      card still lines up with everything else, only its contents slide. */
@@ -173,7 +176,7 @@ export const ADMIN_PAGE = `<!doctype html>
      the key/value rows, where a DID genuinely has nowhere else to break, keep
      the stronger rule. */
   th, td { overflow-wrap: break-word; }
-  .row > *, .toolbar > *, .trow > *, .picker > * { min-width: 0; }
+  .row > *, .toolbar > *, .trow > *, .picker > *, .grid > * { min-width: 0; }
   input, select, textarea, img, pre { max-width: 100%; }
   pre.cmd { white-space: pre-wrap; word-break: break-all; }
 

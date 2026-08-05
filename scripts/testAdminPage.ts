@@ -431,8 +431,14 @@ const run = async () => {
   // zooms out again — the single cause of "opens at ~105% and drags sideways".
   check('form controls are 16px on a phone, so iOS will not zoom in',
     css.includes('input, select, textarea { font-size: 16px; }'))
-  check('the page itself can never scroll sideways',
-    css.includes('html, body { overflow-x: hidden; max-width: 100%; }'))
+  // iOS ignores overflow-x: hidden on html/body — it has to be on a wrapper,
+  // which is what <main> is. An earlier fix put it only on the root and did
+  // nothing at all.
+  check('the wrapper, not the root, is what blocks sideways scrolling',
+    css.includes('position: relative; overflow-x: hidden; overscroll-behavior-x: none;'))
+  check('no legacy -webkit-overflow-scrolling to override it',
+    !css.includes('-webkit-overflow-scrolling'))
+  check('grid children may shrink too', css.includes('.grid > * { min-width: 0; }'))
   check('a card is sized by its container, not by the table inside it',
     css.includes('width: 100%; max-width: 100%; }'))
   check('the page uses one gutter for both edges',
