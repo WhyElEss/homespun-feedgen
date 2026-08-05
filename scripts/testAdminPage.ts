@@ -141,6 +141,7 @@ const FILTERS = {
 
 const run = async () => {
   const script = ADMIN_PAGE.split('<script>')[1].split('</script>')[0]
+  const css = ADMIN_PAGE.split('<style>')[1].split('</style>')[0]
   const app = new El('main')
   const created: El[] = []
   // The page binds Cmd+S here. Without this the stub had no addEventListener at
@@ -261,6 +262,22 @@ const run = async () => {
       resolved.push(JSON.parse(init.body).input)
       body = { ok: true, post: { uri: 'at://did:plc:mc/app.bsky.feed.post/3msc',
         did: 'did:plc:mc', handle: 'mcwyrm.bsky.social', text: 'a pinned post', exists: true } }
+    }
+    else if (url === '/admin/filters/validate') {
+      const sent = JSON.parse(init.body)
+      // A pattern that will not compile is the likeliest thing to happen here,
+      // so the fixture can produce one on demand.
+      if (JSON.stringify(sent).includes('(((')) {
+        return Promise.resolve({
+          status: 400, ok: false,
+          json: () => Promise.resolve({ ok: false,
+            error: 'feeds["coffee"].includePatterns[1] (no comment): SyntaxError: Invalid regular expression' }),
+        })
+      }
+      body = { ok: true, feeds: [
+        { key: 'coffee', includePatterns: 1, excludePatterns: 1, includeDids: 0 },
+        { key: 'radio', includePatterns: 0, excludePatterns: 0, includeDids: 1 },
+      ] }
     }
     else if (url === '/admin/filters' && method === 'PUT') {
       puts.push(JSON.parse(init.body))
@@ -394,6 +411,15 @@ const run = async () => {
     patBody.className.includes('hidden'), patBody.className)
   const disclosure = walk(patBlock).find((e) => e.className === 'btitle')!
   check('...saying so to a screen reader', disclosure.attrs['aria-expanded'] === 'false')
+  // The caret was the character U+25B8, "BLACK RIGHT-POINTING SMALL TRIANGLE",
+  // and small is the point: it read as a bullet at any font-size, so nobody
+  // could tell the row opened. It is drawn in CSS off aria-expanded now, and
+  // carries no text at all — assert that, or the glyph creeps back.
+  const caret = walk(patBlock).find((e) => e.className === 'caret')!
+  check('...with a caret that is drawn, not typed', caret.textContent === '', caret.textContent)
+  check('...sized in pixels and rotated by state',
+    /\.btitle \.caret \{[^}]*border-left: \d+px solid/.test(css) &&
+      /\.btitle\[aria-expanded="true"\] \.caret \{[^}]*rotate\(90deg\)/.test(css))
   const bodyTextarea = find(patBlock, 'textarea')[0]
   disclosure.handlers['click']()
   check('opening it shows the body', !patBody.className.includes('hidden'))
@@ -665,7 +691,6 @@ const run = async () => {
   // that slides sideways; each was added after a real overflow, and deleting
   // any of them brings that overflow back silently.
   console.log('\n── the page is allowed to fit a narrow screen')
-  const css = ADMIN_PAGE.split('<style>')[1].split('</style>')[0]
   for (const rule of [
     '.kv dd { min-width: 0; overflow-wrap: anywhere; }',
     '.picker select { flex: 1; min-width: 0;',
@@ -856,6 +881,47 @@ const run = async () => {
 
   // Put the picker back where the later sections expect to find it — clicking
   // a row in the feed table moved it.
+  picker.value = 'radio'
+  picker.handlers['change']()
+  await settle()
+
+  // Validate answered in the one-line strip at the bottom of the window while
+  // Measure got a block of stat tiles — the same kind of question, two very
+  // different sizes of answer.
+  console.log('\n── Validate answers in the same shape as Measure')
+  // Self-contained: the feed left open by the section above has no patterns to
+  // break, and a section that depends on where the last one stopped is how an
+  // unrelated check fails four sections downstream.
+  picker.value = 'coffee'
+  picker.handlers['change']()
+  await settle()
+  const validate = walk(app).find((e) => e.textContent === 'Validate')!
+  validate.handlers['click']()
+  await settle()
+  const valid = textOf(app)
+  check('the counts get tiles, not a footnote',
+    valid.includes('keep patterns') && valid.includes('remove patterns') &&
+      valid.includes('author DIDs'))
+  check('...and it says nothing was written', valid.includes('Save is what installs it'))
+
+  // A pattern that will not compile is the likeliest thing to happen here, and
+  // the error names the path it choked on — which is exactly what a 6rem
+  // scrollable strip is worst at showing.
+  const inc = find(app, 'textarea').find((t) => t.value.includes('coffee'))!
+  const wasPattern = inc.value
+  inc.value = '((('
+  inc.handlers['input']()
+  validate.handlers['click']()
+  await settle()
+  const refused = textOf(app)
+  check('a refused config gets a block of its own', refused.includes('Config refused'))
+  check('...naming the path it choked on',
+    refused.includes('includePatterns[1]') || refused.includes('Invalid regular expression'),
+    refused.includes('Config refused') ? 'block present' : 'no block')
+  check('...and saying the running config is untouched',
+    refused.includes('still running the config it already had'))
+  inc.value = wasPattern
+  inc.handlers['input']()
   picker.value = 'radio'
   picker.handlers['change']()
   await settle()

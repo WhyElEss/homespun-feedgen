@@ -237,10 +237,21 @@ export const ADMIN_PAGE = `<!doctype html>
   .btitle { border: none; background: none; color: var(--fg); text-align: left;
             padding: .15rem 0; display: flex; align-items: center; gap: .45rem;
             font-size: .92rem; font-weight: 600; min-width: 0; }
-  /* The only affordance saying the row opens, so it has to be visible: at .8rem
-     of a .92rem parent this was an 11px mark that read as a bullet. */
-  .btitle .caret { color: var(--muted); font-size: .95rem; width: 1rem;
-                   flex: 0 0 auto; }
+  /* DRAWN, not typed. It was the character ▸ — U+25B8 BLACK RIGHT-POINTING
+     SMALL TRIANGLE, and "small" is the whole problem: the glyph is tiny inside
+     its own em box, so no font-size makes it read as a control. Enlarging it
+     from .8rem to .95rem changed nothing that mattered; it still looked like a
+     bullet, and the operator could not work out how to open a block at all.
+     A border triangle is sized in pixels, and rotating it is a stronger signal
+     of state than swapping one character for another. */
+  .btitle .caret { flex: 0 0 auto; width: 0; height: 0; margin-right: .2rem;
+                   border-left: 9px solid currentColor;
+                   border-top: 6px solid transparent;
+                   border-bottom: 6px solid transparent;
+                   color: var(--muted); transition: transform .12s ease; }
+  .btitle[aria-expanded="true"] .caret { transform: rotate(90deg); }
+  /* Says the row is a control before it is pressed, for anyone with a pointer. */
+  .btitle:hover .caret, .btitle:hover .ptitle { color: var(--accent); }
   .btitle .ptitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bsub { margin: -.3rem 0 0; overflow: hidden; text-overflow: ellipsis;
           white-space: nowrap; }
@@ -997,7 +1008,8 @@ export const ADMIN_PAGE = `<!doctype html>
           ? h('div', { class: 'mono small muted bsub', text: opts.subtitle })
           : null;
         var paint = function () {
-          caret.textContent = open ? '▾' : '▸';
+          // The caret carries no text: it is drawn in CSS off aria-expanded,
+          // which is the attribute a screen reader reads anyway.
           title.setAttribute('aria-expanded', open ? 'true' : 'false');
           body.className = 'bbody' + (open ? '' : ' hidden');
           if (sub) sub.className = 'mono small muted bsub' + (open ? ' hidden' : '');
@@ -1742,7 +1754,7 @@ export const ADMIN_PAGE = `<!doctype html>
             h('div', { class: 'lbl', text: 'of ' + r.stored + ' stored' })])
         ]));
         if (r.hits && r.wouldExceedAutoPurgeCap) {
-          body.appendChild(h('p', { class: 'msg warn', text:
+          body.appendChild(h('p', { class: 'msg warn', role: 'status', text:
             'As an exclude this would be over the auto-purge cap (25 posts or 5%), ' +
             'so the sweep would be withheld rather than applied.' }));
         }
@@ -2126,16 +2138,54 @@ export const ADMIN_PAGE = `<!doctype html>
       load();
     });
 
+    // Validate and Measure ask the same kind of question about the same draft,
+    // and used to get answers of wildly different sizes: Measure a block of
+    // stat tiles and a sample table, Validate one line in the message strip at
+    // the bottom of the window. The error case is what made that wrong — a
+    // refused pattern names the path it choked on, and a 6rem scrollable strip
+    // is the worst place on the page to read one.
+    function renderValidation(me) {
+      results.innerHTML = '';
+      results.appendChild(h('div', { class: 'grid' }, [
+        h('div', { class: 'card stat' }, [
+          h('div', { class: 'big', text: String(me.includePatterns) }),
+          h('div', { class: 'lbl', text: 'keep patterns' })]),
+        h('div', { class: 'card stat' }, [
+          h('div', { class: 'big', text: String(me.excludePatterns) }),
+          h('div', { class: 'lbl', text: 'remove patterns' })]),
+        h('div', { class: 'card stat' }, [
+          h('div', { class: 'big', text: String(me.includeDids) }),
+          h('div', { class: 'lbl', text: 'author DIDs' })])
+      ]));
+      results.appendChild(h('p', { class: 'msg ok', role: 'status', text:
+        'Valid — every pattern compiled. Nothing has been written: this builds ' +
+        'the candidate config and throws it away. Save is what installs it.' }));
+    }
+    function renderRefused(err) {
+      results.innerHTML = '';
+      results.appendChild(h('div', { class: 'card pad' }, [
+        h('div', { class: 'bhead' }, [
+          h('span', { class: 'blabel', text: 'Config refused' })
+        ]),
+        h('pre', { class: 'cmd', text: String(err) }),
+        h('p', { class: 'small muted', text:
+          'The path before the colon is where to look. Nothing was written and ' +
+          'the service is still running the config it already had.' })
+      ]));
+    }
+
     btnValidate.addEventListener('click', function () {
-      busy(true); say('Validating…');
+      // Same reason as Measure: the bar is reachable from every tab, the block
+      // it writes into is on this one.
+      showTab('filters');
+      busy(true); results.innerHTML = ''; say('Validating…');
       call('filters/validate', { body: assembled() }).then(function (r) {
         return r.json().then(function (b) { return { status: r.status, body: b }; });
       }).then(function (res) {
-        busy(false);
-        if (res.status !== 200) { say(res.body.error, 'bad'); return; }
+        busy(false); say('');
+        if (res.status !== 200) { renderRefused(res.body.error); return; }
         var me = res.body.feeds.filter(function (f) { return f.key === key; })[0] || {};
-        say('Valid — ' + me.includePatterns + ' keep / ' + me.excludePatterns +
-            ' remove, ' + me.includeDids + ' author DID(s).', 'ok');
+        renderValidation(me);
       }).catch(function (e) { busy(false); say('Network error: ' + e.message, 'bad'); });
     });
 
@@ -2192,14 +2242,14 @@ export const ADMIN_PAGE = `<!doctype html>
           h('div', { class: 'lbl', text: 'would remain (now ' + r.keptNow + ')' })])
       ]));
       if (r.wouldExceedAutoPurgeCap) {
-        results.appendChild(h('p', { class: 'msg bad', text:
+        results.appendChild(h('p', { class: 'msg bad', role: 'status', text:
           'This is over the auto-purge safety cap (25 posts or 5%). The cleanup ' +
           'would REFUSE to apply it and log the refusal instead, so the posts ' +
           'would sit in the feed until someone looks. On a small feed even one ' +
           'post can cross the 5% line — check the count, not just the colour.' }));
       }
       if (r.unretrievable) {
-        results.appendChild(h('p', { class: 'msg warn', text:
+        results.appendChild(h('p', { class: 'msg warn', role: 'status', text:
           r.unretrievable + ' stored row(s) could not be fetched from the AppView ' +
           '(deleted upstream) and were not measured.' }));
       }
