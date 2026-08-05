@@ -19,6 +19,7 @@ const check = (name: string, cond: boolean, detail = '') => {
 class El {
   tagName: string
   children: El[] = []
+  parent: El | null = null
   attrs: Record<string, string> = {}
   handlers: Record<string, Function> = {}
   className = ''
@@ -26,18 +27,30 @@ class El {
   value = ''
   checked = false
   disabled = false
+  // Set by the tests that drive an <input type=file>; the page reads .files[0].
+  files: any[] | null = null
   constructor(tag: string) {
     this.tagName = tag.toUpperCase()
   }
   set innerHTML(_v: string) {
+    this.children.forEach((c) => (c.parent = null))
     this.children = []
   }
   get innerHTML(): string {
     return ''
   }
   appendChild(c: El) {
+    c.parent = this
     this.children.push(c)
     return c
+  }
+  // Element.remove() is how the re-auth overlay takes itself down. The stub not
+  // having it would have made that path throw only in a real browser.
+  remove() {
+    if (!this.parent) return
+    const i = this.parent.children.indexOf(this)
+    if (i >= 0) this.parent.children.splice(i, 1)
+    this.parent = null
   }
   setAttribute(k: string, v: string) {
     this.attrs[k] = v
@@ -115,6 +128,13 @@ const FILTERS = {
         includeDids: ['did:plc:someone'],
         retention: { type: 'count', value: 500 },
       },
+      // The minimum a feed can be: no retention, no name, nothing optional.
+      // Here because rendering it must not EDIT it — a default written into the
+      // draft while drawing the page would mark it unsaved before it was
+      // touched, and then save a key nobody added.
+      plain: {
+        includePatterns: [{ pattern: '\\bplain\\b' }],
+      },
     },
   },
 }
@@ -123,7 +143,12 @@ const run = async () => {
   const script = ADMIN_PAGE.split('<script>')[1].split('</script>')[0]
   const app = new El('main')
   const created: El[] = []
+  // The page binds Cmd+S here. Without this the stub had no addEventListener at
+  // all, so the guard around it was the only thing keeping the page from
+  // throwing on load — which is not a thing to leave to a guard.
+  const docHandlers: Record<string, Function> = {}
   const doc = {
+    addEventListener: (ev: string, fn: Function) => { docHandlers[ev] = fn },
     getElementById: () => app,
     createElement: (tag: string) => {
       const el = new El(tag)
@@ -139,12 +164,26 @@ const run = async () => {
   const puts: any[] = []
   const resolved: string[] = []
   const probes: any[] = []
+  const measures: any[] = []
+  const published: any[] = []
   let totpBegins = 0
   let statusFetches = 0
+  // Flipped on to simulate the session idling out — an hour of sitting on the
+  // page with an unsaved edit is an ordinary afternoon, not an edge case.
+  let unauthorized = false
+  let loginAttempts = 0
   const requested: string[] = []
   const fetchStub = (url: string, init?: any) => {
     const method = init?.method ?? (init?.body ? 'POST' : 'GET')
     requested.push(method + ' ' + url)
+    const isAuthRoute = /\/admin\/api\/(login|login-meta|logout)$/.test(url)
+    if (url === '/admin/api/login') loginAttempts++
+    if (unauthorized && !isAuthRoute) {
+      return Promise.resolve({
+        status: 401, ok: false,
+        json: () => Promise.resolve({ ok: false, error: 'not signed in' }),
+      })
+    }
     let body: any = null
     // Exact paths. The first version matched with endsWith, so a call to
     // /admin/api/lab/measure — which does not exist — was answered as if it
@@ -153,6 +192,10 @@ const run = async () => {
     if (url === '/admin/api/status') { statusFetches++; body = STATUS }
     else if (url === '/admin/filters' && method === 'GET') body = JSON.parse(JSON.stringify(FILTERS))
     else if (url === '/admin/lab/measure') {
+      // Measure posts assembled() — the whole candidate config with the draft
+      // spliced in — so it doubles as a window onto the draft at any moment,
+      // without having to Save to find out what the editor is holding.
+      measures.push(JSON.parse(init.body))
       body = { ok: true, result: { feed: 'coffee', stored: 100, unretrievable: 0,
         keptNow: 98, keptAfter: 97, removed: 1, removedPct: 1,
         wouldExceedAutoPurgeCap: false, cachedAt: '2026-08-04T20:00:00.000Z',
@@ -167,6 +210,7 @@ const run = async () => {
       ] }
     }
     else if (url === '/admin/api/login-meta') { body = { ok: true, totpRequired: true } }
+    else if (url === '/admin/api/login') { unauthorized = false; body = { ok: true } }
     else if (url === '/admin/api/logout') { body = { ok: true } }
     else if (url === '/admin/totp/status') {
       body = { ok: true, enabled: false, broken: false, source: null,
@@ -203,6 +247,11 @@ const run = async () => {
             includeTarget: null, mutedByList: false, disagrees: false },
         ] } }
     }
+    else if (/^\/admin\/feed\/[^/]+\/record$/.test(url) && method === 'POST') {
+      published.push({ url, payload: JSON.parse(init.body) })
+      body = { ok: true, uri: 'at://did:plc:p/app.bsky.feed.generator/x',
+               cid: 'bafy2', changed: ['avatar'] }
+    }
     else if (/^\/admin\/feed\/[^/]+\/record$/.test(url)) {
       body = { ok: true, record: { uri: 'at://did:plc:p/app.bsky.feed.generator/coffee',
         cid: 'bafy', displayName: 'Coffee, published', description: 'the real one',
@@ -234,12 +283,24 @@ const run = async () => {
   const timers: Function[] = []
   // The page checks window.matchMedia before autofocusing; the stub has no
   // window at all, which is exactly the "not available" branch it must survive.
+  // Reads back whatever the test put on the fake File. Synchronous on purpose:
+  // the page's own callback is what is under test, not the browser's plumbing.
+  class FileReaderStub {
+    result = ''
+    onload: Function | null = null
+    readAsDataURL(f: any) {
+      this.result = f.dataUrl
+      if (this.onload) this.onload()
+    }
+  }
   const fn = new Function(
     'document', 'location', 'fetch', 'setTimeout', 'clearTimeout', 'confirm',
+    'setInterval', 'FileReader',
     script,
   )
   fn(doc, { pathname: '/admin' }, fetchStub,
-     (cb: Function) => timers.push(cb), () => {}, () => true)
+     (cb: Function) => timers.push(cb), () => {}, () => true,
+     () => {}, FileReaderStub)
   const settle = async () => {
     for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r))
   }
@@ -262,7 +323,7 @@ const run = async () => {
   const selects = find(app, 'select')
   check('there is a feed picker', selects.length > 0)
   const picker = selects[0]
-  check('...with an option per feed', picker.children.length === 2,
+  check('...with an option per feed', picker.children.length === 3,
     picker.children.map((o) => o.textContent).join(' / '))
   // A <select> is as wide as its longest option, which is what pushed the page
   // off a phone screen. The name alone; the rest goes on the line below.
@@ -273,12 +334,39 @@ const run = async () => {
   const firstBlock = walk(app).find((e) => e.className.includes('block'))!
   check('...positioned ABOVE the blocks', pickerIdx < walk(app).indexOf(firstBlock))
 
+  console.log('\n── the tabs')
+  const tabBtn = (label: string) =>
+    walk(app).find((e) => e.attrs.role === 'tab' && e.textContent === label)!
+  const panelOf = (id: string) => walk(app).find((e) => e.attrs.id === 'panel-' + id)!
+  check('there is a tablist', walk(app).some((e) => e.attrs.role === 'tablist'))
+  for (const label of ['Filters', 'Lab', 'Record', 'Status', 'Security']) {
+    check(`tab: ${label}`, !!tabBtn(label))
+  }
+  check('Filters is the one open', tabBtn('Filters').attrs['aria-selected'] === 'true')
+  check('...and only it is a tab stop', tabBtn('Lab').attrs.tabindex === '-1')
+  check('the other panels are hidden, not absent',
+    panelOf('lab').className === 'hidden' && panelOf('status').className === 'hidden')
+  // Hidden, not removed — that is what lets a half-typed pattern and an open
+  // 2FA enrolment survive being navigated away from.
+  check('...so the status panel still holds its content',
+    textOf(panelOf('status')).includes('Retention sweep'))
+  check('the feed picker sits outside the tabs, above them',
+    !walk(panelOf('filters')).some((e) => e.attrs.id === 'feedsel') &&
+      walk(app).some((e) => e.attrs.id === 'feedsel'))
+
   console.log('\n── the blocks')
-  for (const label of ['Input', 'RegEx — keep #1', 'RegEx — remove #1',
-                       'Remove if — item has labels', 'Remove — list of users',
-                       'Pinned post', 'Sort by']) {
+  for (const label of ['Input', 'Remove if — item has labels', 'Remove — list of users',
+                       'Pinned post', 'Always applied — no setting for these']) {
     check(`block: ${label}`, all.includes(label))
   }
+  check('patterns are grouped under one header each',
+    all.includes('A post enters the feed if ANY of these match') &&
+      all.includes('A post is dropped if ANY of these match'))
+  // Thirteen copies of one sentence is the volume at which nobody reads it.
+  check('...said once per group, not once per pattern',
+    all.split('A post is dropped if ANY').length - 1 === 1)
+  check('each group has its own add button',
+    walk(app).filter((e) => e.textContent === '+ Add pattern').length === 2)
   check('the pattern is loaded into its block',
     find(app, 'textarea').some((t) => t.value.includes('coffee')))
   check('its comment travels with it',
@@ -287,7 +375,177 @@ const run = async () => {
     find(app, 'input').some((i) => i.value.includes('app.bsky.graph.list')))
   check('target chips are rendered', all.includes('Post Text') && all.includes('Image Alt Text'))
   check('fixed blocks are marked as such', all.includes('fixed'))
-  check('...and say replies are always dropped', all.includes('Always on'))
+  check('...and say replies are always dropped', all.includes('Replies are removed'))
+
+  // "RegEx — remove #7" told you nothing and went stale the moment anything
+  // above it was deleted. The comment is where the editorial reason lives, so a
+  // shut list of them reads as the policy it is.
+  console.log('\n── a pattern block calls itself by its comment')
+  const titles = walk(app).filter((e) => e.className === 'ptitle').map((e) => e.textContent)
+  check('the commented pattern is titled by its comment',
+    titles.indexOf('the topic') >= 0, titles.join(' / '))
+  check('...and one without a comment falls back to the expression',
+    titles.indexOf('\\bdiscount\\b') >= 0, titles.join(' / '))
+  check('no block is numbered any more', !all.includes('RegEx — keep #1'))
+  const patBlock = walk(app).find((e) =>
+    e.className.includes('block') && textOf(e).includes('the topic'))!
+  const patBody = walk(patBlock).find((e) => e.className.indexOf('bbody') === 0)!
+  check('a block with something in it starts shut',
+    patBody.className.includes('hidden'), patBody.className)
+  const disclosure = walk(patBlock).find((e) => e.className === 'btitle')!
+  check('...saying so to a screen reader', disclosure.attrs['aria-expanded'] === 'false')
+  const bodyTextarea = find(patBlock, 'textarea')[0]
+  disclosure.handlers['click']()
+  check('opening it shows the body', !patBody.className.includes('hidden'))
+  check('...updating aria-expanded', disclosure.attrs['aria-expanded'] === 'true')
+  // Collapsing that destroyed the field would be the same bug as the redraw it
+  // replaced, one level down.
+  check('...and it is the same textarea, not a rebuilt one',
+    find(patBlock, 'textarea')[0] === bodyTextarea)
+  disclosure.handlers['click']()
+  check('shutting it hides the body again', patBody.className.includes('hidden'))
+
+  // The loop this project actually runs on is: edit a token, measure, decide.
+  // It used to mean copying the expression into the Lab further down the page
+  // and setting the target again by hand — four steps of clerical work between
+  // the question and the answer, which is how measuring stops happening.
+  console.log('\n── a pattern can measure itself')
+  // Scoped to the panel: the Lab has a button of the same name, and searching
+  // the whole page found that one first.
+  const countBtns = walk(panelOf('filters')).filter((e) => e.textContent === 'Count matches')
+  check('every pattern block offers a count', countBtns.length === 2, `${countBtns.length}`)
+  const beforeProbes = probes.length
+  countBtns[1].handlers['click']()
+  await settle()
+  check('...asking about this feed', probes[beforeProbes]?.feed === 'coffee')
+  check('...with this block\'s own expression',
+    probes[beforeProbes]?.pattern === '\\bdiscount\\b', probes[beforeProbes]?.pattern)
+  check('...and its own target, not the Lab default',
+    probes[beforeProbes]?.target === 'text|alt_text|link')
+  // For an exclude the count is not an indication, it is the answer.
+  check('...reporting an exclude as what would leave',
+    textOf(app).includes('2 of 100 stored would go'))
+  const countAll = walk(app).filter((e) => e.textContent === 'Count all')
+  check('a whole group can be counted at once', countAll.length === 2)
+
+  console.log('\n── the action bar')
+  const bar = walk(app).find((e) => e.className.indexOf('actions') === 0)!
+  check('the actions are in a bar of their own', !!bar)
+  check('...carrying Save', walk(bar).some((e) => e.textContent === 'Save'))
+  check('...and the unsaved marker', walk(bar).some((e) => e.className.includes('warn-text')))
+  check('...shown while the filters are open', !bar.className.includes('hidden'))
+  check('...with room reserved for it', app.className === 'hasbar')
+
+  // Every one of these used to go through redraw(), which empties the block
+  // list and builds it again. That is the same act the 30s poll was removed for
+  // — it just had a person pressing it rather than a timer. Rebuilding a
+  // textarea destroys its undo history, so a chip pressed halfway through
+  // writing an alternation cost whoever pressed it their Cmd+Z, and it reverted
+  // anything held only in the DOM (see the record card, further down).
+  //
+  // Node IDENTITY is the assertion, because a rebuilt block looks identical in
+  // every other respect: same tag, same value, same position.
+  console.log('\n── editing a block does not rebuild the page under you')
+  const patArea = find(app, 'textarea').find((t) => t.value.includes('coffee'))!
+  const altChip = walk(app).find((e) => e.textContent === 'Image Alt Text')!
+  check('the alt-text chip starts on', altChip.className.includes('on'))
+  check('...and says so to a screen reader', altChip.attrs['aria-pressed'] === 'true')
+  altChip.handlers['click']()
+  check('toggling it keeps the very same textarea node',
+    find(app, 'textarea').find((t) => t.value.includes('coffee')) === patArea)
+  check('...repaints only that chip', !altChip.className.includes('on'))
+  check('...updates aria-pressed with it', altChip.attrs['aria-pressed'] === 'false')
+  check('...and marks the draft dirty', textOf(app).includes('unsaved change'))
+
+  // The confirm() this replaced asked "Save <rkey>?" and said nothing
+  // about the content — so it was answered yes every time, which is a reflex
+  // and not a check.
+  console.log('\n── Save says what it is about to do')
+  check('the change is named, not just counted',
+    textOf(app).includes('target text + alt → post text'), textOf(app).slice(0, 0))
+  check('...and counted in the marker',
+    textOf(app).includes('1 unsaved change to Coffee'))
+  check('...under a heading that totals them',
+    textOf(app).includes('Unsaved changes (1)'))
+  check('...saying what Save will actually do',
+    textOf(app).includes('keeping a backup') && textOf(app).includes('within five minutes'))
+
+  const measureBtn = walk(app).find((e) => e.textContent === 'Measure')!
+  const draftNow = async () => {
+    measureBtn.handlers['click']()
+    await settle()
+    return measures[measures.length - 1]?.filters?.feeds?.coffee
+  }
+  check('...having actually changed the target in the draft',
+    (await draftNow())?.includePatterns?.[0]?.target === 'text')
+
+  // The × is one mis-tap away from an alternation built up over months, and the
+  // draft is its only copy until Save.
+  console.log('\n── removing a pattern can be undone')
+  const xs = walk(app).filter((e) => e.className === 'x')
+  check('each pattern block has a remove button', xs.length === 2)
+  check('...labelled for a screen reader, not just "×"',
+    xs[1].attrs['aria-label'] === 'Remove \\bdiscount\\b',
+    xs[1].attrs['aria-label'])
+  xs[1].handlers['click']()
+  const removed = textOf(app)
+  check('removing it says what went', removed.includes('Removed: \\bdiscount\\b'))
+  check('...and offers Undo', walk(app).some((e) => e.textContent === 'Undo'))
+  check('...having taken it out of the draft',
+    ((await draftNow())?.excludePatterns || []).length === 0)
+  const undo = walk(app).find((e) => e.textContent === 'Undo')!
+  undo.handlers['click']()
+  const restored = await draftNow()
+  check('Undo puts the pattern back', restored?.excludePatterns?.length === 1)
+  check('...the same one, at its own position',
+    restored?.excludePatterns?.[0]?.pattern === '\\bdiscount\\b',
+    JSON.stringify(restored?.excludePatterns))
+  check('...and takes the offer away', !walk(app).some((e) => e.textContent === 'Undo'))
+
+  console.log('\n── adding a pattern appends rather than rebuilding')
+  const addKeep = walk(app).filter((e) => e.textContent === '+ Add pattern')[0]
+  addKeep.handlers['click']()
+  check('the existing textarea is still the same node',
+    find(app, 'textarea').find((t) => t.value.includes('coffee')) === patArea)
+  check('...and the draft has the new pattern',
+    ((await draftNow())?.includePatterns || []).length === 2)
+
+  // The whole reason tabs are switched by toggling .hidden rather than by
+  // rendering the chosen one: an edit in progress must not be a thing you can
+  // lose by looking at something else.
+  console.log('\n── moving between tabs keeps everything alive')
+  const beforeTabs = find(app, 'textarea').find((t) => t.value.includes('coffee'))!
+  tabBtn('Status').handlers['click']()
+  check('the tab follows the click', tabBtn('Status').attrs['aria-selected'] === 'true')
+  check('...hiding the filters', panelOf('filters').className === 'hidden')
+  check('...but the bar stays, because there are unsaved changes',
+    !walk(app).find((e) => e.className.indexOf('actions') === 0)!.className.includes('hidden'))
+  tabBtn('Filters').handlers['click']()
+  check('coming back finds the very same field',
+    find(app, 'textarea').find((t) => t.value.includes('coffee')) === beforeTabs)
+  // A Refresh rebuilds the status and security panels; the open tab is held
+  // outside them so it cannot be reset by that.
+  tabBtn('Security').handlers['click']()
+  walk(app).find((e) => e.textContent === 'Refresh')!.handlers['click']()
+  await settle()
+  check('a Refresh does not throw you back to the first tab',
+    tabBtn('Security').attrs['aria-selected'] === 'true')
+  tabBtn('Filters').handlers['click']()
+
+  console.log('\n── opening a feed does not count as editing it')
+  picker.value = 'plain'
+  picker.handlers['change']()
+  await settle()
+  check('a feed with nothing optional set opens clean',
+    !textOf(app).includes('unsaved changes'))
+  measureBtn.handlers['click']()
+  await settle()
+  const plain = measures[measures.length - 1]?.filters?.feeds?.plain
+  check('...and drawing it added no retention key',
+    !!plain && plain.retention === undefined, JSON.stringify(plain))
+  picker.value = 'coffee'
+  picker.handlers['change']()
+  await settle()
 
   console.log('\n── the record card is separate from the filters')
   check('the card is shown', all.includes('Feed record — what readers see'))
@@ -348,7 +606,7 @@ const run = async () => {
   check('...with when the next one is due', all.includes('Next in'))
 
   console.log('\n── probing a single pattern')
-  const countBtn = walk(app).find((e) => e.textContent === 'Count matches')!
+  const countBtn = walk(panelOf('lab')).find((e) => e.textContent === 'Count matches')!
   check('there is a probe button', !!countBtn)
   const patField = find(app, 'input').find((i) =>
     (i.attrs.placeholder || '').indexOf('other term') >= 0)!
@@ -436,14 +694,20 @@ const run = async () => {
   // is how the password and 2FA fields stayed 15px while everything else was
   // "fixed". Assert the outcome, not the intention: every typable control
   // declares 16px itself, and none of them inherits its size.
-  const controlRules = css.match(/[^{}]*(?:input|select|textarea)[^{}]*\{[^}]*\}/g) || []
+  // Comments stripped first. The pattern below treats everything between one }
+  // and the next { as a selector, so a comment that merely MENTIONS a textarea
+  // gets glued onto the rule after it — and that rule is then held to a
+  // requirement about form controls it was never part of. The check is about
+  // rules; a comment is not one.
+  const cssRules = css.replace(/\/\*[\s\S]*?\*\//g, '')
+  const controlRules = cssRules.match(/[^{}]*(?:input|select|textarea)[^{}]*\{[^}]*\}/g) || []
   const typable = controlRules.filter((r) => !r.includes('type=file'))
   check('every typable control declares its own size', typable.length >= 4, `${typable.length} rules`)
   check('...and all of them are 16px',
     typable.every((r) => !/font(-size)?\s*:/.test(r) || r.includes('16px')),
     typable.filter((r) => /font(-size)?\s*:/.test(r) && !r.includes('16px')).join(' | ').slice(0, 90))
   check('no control takes its size from `font: inherit`',
-    !/(?:input|select|textarea)[^{}]*\{[^}]*font:\s*inherit/.test(css))
+    !/(?:input|select|textarea)[^{}]*\{[^}]*font:\s*inherit/.test(cssRules))
   // iOS ignores overflow-x: hidden on html/body — it has to be on a wrapper,
   // which is what <main> is. An earlier fix put it only on the root and did
   // nothing at all.
@@ -528,7 +792,8 @@ const run = async () => {
   await settle()
   check('a PUT was sent', puts.length === 1)
   const sent = puts[0]?.filters
-  check('...carrying both feeds', Object.keys(sent?.feeds ?? {}).join() === 'coffee,radio')
+  check('...carrying every feed', Object.keys(sent?.feeds ?? {}).join() === 'coffee,radio,plain',
+    Object.keys(sent?.feeds ?? {}).join())
   check('...with the untouched feed byte-identical',
     JSON.stringify(sent.feeds.coffee) === JSON.stringify(FILTERS.filters.feeds.coffee))
   check('...preserving keys the editor does not model', sent._readme !== undefined)
@@ -550,8 +815,53 @@ const run = async () => {
   picker.handlers['change']()
   await settle()
 
+  // Reading the table and then hunting for the same feed in a dropdown was two
+  // steps for one intention.
+  console.log('\n── the feed table is a way in, not just a readout')
+  const statusPanel = panelOf('status')
+  const rowPick = walk(statusPanel).find((e) =>
+    e.className === 'linkish' && e.textContent === 'Coffee')!
+  check('a feed in the table can be clicked', !!rowPick)
+  rowPick.handlers['click']()
+  await settle()
+  check('...which opens it in the editor', find(app, 'select')[0].value === 'coffee')
+  check('...on the filters tab', tabBtn('Filters').attrs['aria-selected'] === 'true')
+  const out = find(statusPanel, 'a')[0]
+  check('...and each row links to the live feed',
+    (out?.attrs.href || '').indexOf('https://bsky.app/profile/did:plc:p/feed/') === 0,
+    out?.attrs.href)
+  // The avatars are proxied through this origin precisely so that nothing here
+  // tells Bluesky the admin URL exists. A bare link out would undo that.
+  check('...without handing Bluesky the referrer',
+    (out?.attrs.rel || '').includes('noreferrer') &&
+      out?.attrs.referrerpolicy === 'no-referrer')
+  check('...and the page says so for everything else too',
+    ADMIN_PAGE.includes('<meta name="referrer" content="no-referrer">'))
+
+  console.log('\n── Cmd+S saves')
+  const dids2 = find(app, 'textarea').find((t) => t.value.includes('coffee'))!
+  dids2.value = '\\bcoffee\\b|\\bmocha\\b'
+  dids2.handlers['input']()
+  const putsBeforeKey = puts.length
+  docHandlers['keydown']({ key: 's', metaKey: true, preventDefault: () => {} })
+  await settle()
+  check('the shortcut is bound', puts.length === putsBeforeKey + 1)
+  check('...and it sent the edit', JSON.stringify(puts[puts.length - 1]?.filters?.feeds?.coffee)
+    .includes('mocha'))
+  docHandlers['keydown']({ key: 's', metaKey: true, preventDefault: () => {} })
+  await settle()
+  // Nothing to save is not a reason to write the file again.
+  check('...and does nothing when there is nothing to save',
+    puts.length === putsBeforeKey + 1)
+
+  // Put the picker back where the later sections expect to find it — clicking
+  // a row in the feed table moved it.
+  picker.value = 'radio'
+  picker.handlers['change']()
+  await settle()
+
   console.log('\n── measuring an edit')
-  const measure = walk(app).find((e) => e.textContent === 'Measure this edit')!
+  const measure = walk(app).find((e) => e.textContent === 'Measure')!
   measure.handlers['click']()
   await settle()
   check('the request goes to the route that exists',
@@ -606,6 +916,70 @@ const run = async () => {
   check('...and an unsaved edit survives it',
     find(app, 'textarea').some((t) => t.value.includes('another')))
 
+  // The record card is refilled by every redraw(), and it used to be refilled
+  // from the last PUBLISHED record — so a description typed here and not yet
+  // published was reverted by any redraw at all. The state lives outside the
+  // DOM now, keyed by rkey, which is the same treatment jetstream/identity/
+  // totpEnrol get in the status pane.
+  console.log('\n── unpublished record edits survive a redraw')
+  const recDesc = find(app, 'textarea').find((t) => t.value === 'the real one')!
+  check('the card is showing the published description', !!recDesc)
+  recDesc.value = 'edited, not published'
+  recDesc.handlers['input']()
+  const descNow = () =>
+    find(app, 'textarea').filter((t) => (t.attrs.placeholder || '').indexOf('description shown') === 0)[0]
+  picker.value = 'coffee'
+  picker.handlers['change']()
+  await settle()
+  check('switching feeds does not carry the edit across',
+    descNow()?.value === 'the real one', descNow()?.value)
+  picker.value = 'radio'
+  picker.handlers['change']()
+  await settle()
+  check('...and coming back finds it still there',
+    descNow()?.value === 'edited, not published', descNow()?.value)
+
+  // The pending avatar was a single variable, so it was armed for whichever
+  // feed happened to be open when Publish was pressed — an image chosen for one
+  // feed would have been written to another feed's record on the PDS.
+  console.log('\n── a chosen avatar belongs to the feed it was chosen for')
+  const AVATAR = 'data:image/png;base64,AAA'
+  const fileInput = find(app, 'input').filter((i) => i.attrs.type === 'file')[0]
+  const avatarSrc = () => find(app, 'img').filter((i) => i.className === 'avatar')[0]?.attrs.src
+  fileInput.files = [{ name: 'logo.png', size: 2048, dataUrl: AVATAR }]
+  fileInput.handlers['change']()
+  check('choosing one previews it', avatarSrc() === AVATAR, avatarSrc())
+  check('...saying it is not published yet', textOf(app).includes('not published yet'))
+  picker.value = 'coffee'
+  picker.handlers['change']()
+  await settle()
+  check('the other feed shows its OWN avatar, not the pending one',
+    (avatarSrc() || '').indexOf('/admin/feed/coffee/avatar') === 0, avatarSrc())
+  picker.value = 'radio'
+  picker.handlers['change']()
+  await settle()
+  check('...and the pending one is still pending on its own feed',
+    avatarSrc() === AVATAR, avatarSrc())
+
+  const publish = walk(app).find((e) => e.textContent === 'Publish to Bluesky')!
+  publish.handlers['click']()
+  await settle()
+  check('publishing writes to the feed the image was chosen for',
+    published[0]?.url === '/admin/feed/radio/record', published[0]?.url)
+  check('...carrying that image', published[0]?.payload?.avatarBase64 === AVATAR)
+  check('...and the description typed alongside it',
+    published[0]?.payload?.description === 'edited, not published')
+
+  // The session idles out after an hour. Everything below is about what that
+  // must not cost: replacing the page with the login form throws away an edit
+  // that exists nowhere else.
+  console.log('\n── every .msg is announced, not just shown')
+  const msgs = walk(app).filter((e) => /(^| )msg( |$)/.test(e.className))
+  check('there are message areas to check', msgs.length > 0, `${msgs.length}`)
+  check('...and all of them carry role=status',
+    msgs.every((e) => e.attrs.role === 'status'),
+    msgs.filter((e) => e.attrs.role !== 'status').map((e) => e.className).join(' / '))
+
   // The login form is the first thing every visitor sees and nothing here had
   // ever rendered it. It also reaches for window.matchMedia, which does not
   // exist in this stub — the branch has to survive that.
@@ -622,6 +996,73 @@ const run = async () => {
     !fields.some((f) => f.attrs.readonly !== undefined))
   check('...and it asked whether a second factor is needed',
     requested.some((r) => r.indexOf('/admin/api/login-meta') > 0))
+
+  // Signing back in through the real form, which is also how the editor below
+  // gets rebuilt.
+  const loginForm = find(app, 'form')[0]
+  fields[0].value = 'admin'
+  fields[1].value = 'hunter2'
+  loginForm.handlers['submit']({ preventDefault: () => {} })
+  await settle()
+  check('...and signing in brings the page back', textOf(app).includes('Coffee'))
+
+  // An hour on the page with an unsaved edit is an ordinary afternoon. What
+  // used to happen next: the 401 replaced the whole page with the login form,
+  // and the edit — which existed nowhere else — went with it.
+  console.log('\n── an expired session does not take unsaved work with it')
+  const live = find(app, 'textarea').find((t) => t.value.includes('coffee'))!
+  live.value = '\\bcoffee\\b|\\bespresso\\b'
+  live.handlers['input']()
+  const putsBefore = puts.length
+  unauthorized = true
+  const saveBtn = walk(app).find((e) => e.tagName === 'BUTTON' && e.textContent === 'Save')!
+  saveBtn.handlers['click']()
+  await settle()
+  const overlay = walk(app).find((e) => e.className === 'modal')
+  check('it asks for the password again, over the page', !!overlay)
+  check('...saying what happened', textOf(app).includes('Session expired'))
+  check('...leaving the unsaved edit exactly where it was',
+    find(app, 'textarea').some((t) => t.value.includes('espresso')))
+  check('...and the editor still standing behind it',
+    walk(app).some((e) => e.attrs.id === 'feedsel'))
+  // Re-sending the PUT unasked would replay a write against a config that may
+  // have moved on — the clobber the digest guard exists to prevent.
+  check('...having retried nothing on its own', puts.length === putsBefore)
+
+  find(app, 'input').filter((i) => i.attrs.type === 'password')
+    .forEach((i) => { i.value = 'hunter2' })
+  const reauthForm = overlay!.children[0]
+  reauthForm.handlers['submit']({ preventDefault: () => {} })
+  await settle()
+  check('signing in dismisses the prompt',
+    !walk(app).some((e) => e.className === 'modal'))
+  check('...and the edit is still there to save',
+    find(app, 'textarea').some((t) => t.value.includes('espresso')))
+  saveBtn.handlers['click']()
+  await settle()
+  check('...which now goes through', puts.length === putsBefore + 1)
+
+  // With nothing to lose, the full login form is still the right answer.
+  unauthorized = true
+  walk(app).find((e) => e.textContent === 'Refresh')!.handlers['click']()
+  await settle()
+  check('a clean editor just gets the login form back',
+    textOf(app).includes('Your session ended'))
+  check('...and no prompt on top of it',
+    !walk(app).some((e) => e.className === 'modal'))
+
+  console.log('\n── filled surfaces are legible in both themes')
+  // White text on the dark theme's lighter accents measured 2.4:1 and 2.25:1
+  // against the 4.5:1 ordinary text needs. One variable, because each theme
+  // keeps its fills at the opposite end of the scale from its text.
+  check('there is a foreground colour for filled surfaces',
+    css.includes('--on-fill: #ffffff;') && css.includes('--on-fill: #0b1220;'))
+  check('...and the primary button uses it',
+    /button\.primary \{[^}]*color: var\(--on-fill\)/.test(css))
+  check('...as does a selected chip',
+    /\.chip\.on \{[^}]*color: var\(--on-fill\)/.test(css))
+  check('no filled surface hard-codes white any more',
+    !/(?:button\.primary|\.chip\.on) \{[^}]*color: #fff/.test(css))
 
   console.log(`\n${pass === total ? 'All' : `${pass} of`} ${total} checks passed`)
   process.exit(pass === total ? 0 : 1)

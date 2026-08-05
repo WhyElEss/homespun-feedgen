@@ -14,17 +14,30 @@ export const ADMIN_PAGE = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
+<!-- Same reasoning as proxying the avatars rather than linking them at the CDN:
+     nothing this page touches should tell anyone that this admin URL exists, or
+     who is reading it. Covers the links out to bsky.app added below. -->
+<meta name="referrer" content="no-referrer">
 <title>feedgen admin</title>
 <style>
   :root {
     color-scheme: light dark;
     --bg: #fbfbfa; --fg: #1a1a19; --muted: #6b6b68; --line: #e2e2df;
     --card: #ffffff; --accent: #2563eb; --ok: #157f3d; --warn: #9a6700; --bad: #b42318;
+    /* Text ON a filled accent or ok surface. Both themes keep their accents at
+       opposite ends of the scale — dark on light here, light on dark below —
+       so one variable serves both fills. It exists because white-on-accent was
+       carried into the dark theme unchanged, where the accents are LIGHTER:
+       white on #6ea8fe measures 2.4:1 and white on #4ec27f 2.25:1, against the
+       4.5:1 that ordinary text needs. Dark ink on those same fills is 7.8:1
+       and 8.4:1. Light theme is unchanged at 4.9:1 and 5.1:1. */
+    --on-fill: #ffffff;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #17181a; --fg: #e8e8e6; --muted: #9a9a97; --line: #2c2e31;
       --card: #1e2022; --accent: #6ea8fe; --ok: #4ec27f; --warn: #e0b341; --bad: #ff6b5e;
+      --on-fill: #0b1220;
     }
   }
   * { box-sizing: border-box; }
@@ -91,7 +104,12 @@ export const ADMIN_PAGE = `<!doctype html>
     font: inherit; padding: .45rem .9rem; border-radius: 7px; cursor: pointer;
     border: 1px solid var(--line); background: var(--card); color: var(--fg);
   }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-fill); }
+  /* Save writes a file on this box; this one writes to your repository on the
+     PDS, under credentials you just typed. They were the same blue button.
+     Different weight, so the hand does not treat them as the same act. */
+  button.outgoing { background: none; color: var(--warn); border-color: var(--warn);
+                    font-weight: 600; }
   button:disabled { opacity: .55; cursor: default; }
   /* 16px on every control, always, and NEVER via 'font: inherit'.
      iOS Safari zooms the whole page in when focus enters a control under 16px
@@ -107,16 +125,27 @@ export const ADMIN_PAGE = `<!doctype html>
     width: 100%; padding: .55rem .7rem; border-radius: 7px;
     border: 1px solid var(--line); background: var(--bg); color: var(--fg);
   }
-  /* Present for password managers, not for the operator: it carries no meaning
-     and cannot be changed, so it should not look like something to fill in. */
   form.login input { margin-bottom: .5rem; }
+  /* The re-authentication prompt. Kept above .hidden in the sheet: both are
+     single-class selectors, so whichever comes last wins, and .hidden has to. */
+  .modal { position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 50;
+           background: rgba(0, 0, 0, .5); display: flex; align-items: center;
+           justify-content: center; padding: var(--gutter); overflow-y: auto; }
+  .modal form { max-width: 21rem; width: 100%; }
+  .modal input { margin-bottom: .5rem; }
   .hidden { display: none; }
   form.login { max-width: 21rem; margin: 4rem auto; }
   form.login p { color: var(--muted); font-size: .85rem; margin: .2rem 0 1rem; }
   .row { display: flex; gap: .5rem; align-items: center; margin-top: .7rem; }
   .err { color: var(--bad); font-size: .85rem; min-height: 1.2em; margin-top: .6rem; }
   .muted { color: var(--muted); }
-  .small { font-size: .82rem; }
+  /* Was .82rem. Almost every explanation on this page is .small AND muted, so
+     the text carrying the reasoning was the least legible thing on it. */
+  .small { font-size: .875rem; }
+  /* Prose stops being readable somewhere past 75 characters and <main> is 62rem
+     wide, which ran these notes to about 110. Only paragraphs — tables, rows
+     and fields still want the full width. */
+  p.small { max-width: 68ch; }
   footer { margin-top: 2.5rem; color: var(--muted); font-size: .8rem; }
   textarea {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 16px;
@@ -158,11 +187,83 @@ export const ADMIN_PAGE = `<!doctype html>
   button.x { border: none; background: none; color: var(--muted); font-size: 1.1rem;
              line-height: 1; padding: 0 .35rem; }
   button.x:hover { color: var(--bad); }
+
+  /* ── tabs ────────────────────────────────────────────────────────────────
+     The page was one scroll of eight sections, so the thing you came to do was
+     always below the thing you read once a week. Switching tabs only toggles
+     .hidden — nothing is rebuilt, so an unsaved edit, a half-typed pattern and
+     a 2FA enrolment all survive being navigated away from and back. */
+  .tabs { display: flex; gap: .2rem; margin: 1rem 0 1.25rem; flex-wrap: nowrap;
+          overflow-x: auto; border-bottom: 1px solid var(--line); }
+  .tabs button { border: none; background: none; color: var(--muted);
+                 font-size: .9rem; white-space: nowrap; min-height: 44px;
+                 padding: .5rem .8rem; border-radius: 7px 7px 0 0;
+                 border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .tabs button[aria-selected="true"] { color: var(--fg); font-weight: 600;
+                                       border-bottom-color: var(--accent); }
+
+  /* ── the action bar ──────────────────────────────────────────────────────
+     FIXED, not sticky: <main> carries overflow-x: hidden, which makes it a
+     scroll container, and position: sticky then anchors to a scrollport the
+     same size as its own content — i.e. does nothing at all. Fixed is not
+     clipped by an ancestor's overflow, so it is the one that works here.
+     .hasbar on <main> reserves the room it floats over. */
+  .actions { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+             background: var(--card); border-top: 1px solid var(--line);
+             padding: .6rem var(--gutter);
+             padding-bottom: calc(.6rem + env(safe-area-inset-bottom)); }
+  .actions-in { max-width: 62rem; margin: 0 auto; display: flex; gap: .5rem;
+                align-items: center; flex-wrap: wrap; }
+  .actions-in > * { min-width: 0; }
+  .actions-in .spacer { flex: 1; }
+  .actions .msg { margin-top: .5rem; max-height: 6rem; overflow-y: auto; }
+  /* Both collapse to nothing rather than holding a row open while empty — and
+     the margin goes with them, because it belongs to the element and not to
+     the row that contains it. */
+  .actions .msg:empty { display: none; }
+  /* Beats button.linkish (0-1-1) on specificity, which is the point: the marker
+     is a button so it can take you to the list, but it is a warning first. */
+  .actions .warn-text { display: block; margin-bottom: .35rem; text-align: left;
+                        color: var(--warn); }
+  .actions .warn-text:empty { display: none; }
+  ul.changes { margin: 0; padding-left: 1.15rem; }
+  ul.changes li + li { margin-top: .2rem; }
+  main.hasbar { padding-bottom: 5.5rem; }
+
+  /* ── collapsed blocks ────────────────────────────────────────────────────
+     Collapsing HIDES the body, it never removes it: a collapsed pattern keeps
+     its own textarea, and reopening shows that node rather than a copy — same
+     reason nothing else on this page is rebuilt under the person using it. */
+  .btitle { border: none; background: none; color: var(--fg); text-align: left;
+            padding: .15rem 0; display: flex; align-items: center; gap: .45rem;
+            font-size: .92rem; font-weight: 600; min-width: 0; }
+  /* The only affordance saying the row opens, so it has to be visible: at .8rem
+     of a .92rem parent this was an 11px mark that read as a bullet. */
+  .btitle .caret { color: var(--muted); font-size: .95rem; width: 1rem;
+                   flex: 0 0 auto; }
+  .btitle .ptitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bsub { margin: -.3rem 0 0; overflow: hidden; text-overflow: ellipsis;
+          white-space: nowrap; }
+  .ghead { display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap;
+           margin: 1.4rem 0 .5rem; }
+  .ghead > * { min-width: 0; }
+  .gtitle { font-size: .82rem; text-transform: uppercase; letter-spacing: .06em;
+            color: var(--fg); font-weight: 700; margin: 0; }
+  .ghead .spacer { flex: 1; }
+  .ghint { margin: -.2rem 0 .6rem; }
   .chips { display: flex; gap: .35rem; flex-wrap: wrap; }
   .chip { font-size: .78rem; padding: .2rem .6rem; border-radius: 999px;
           border: 1px solid var(--line); background: var(--bg); color: var(--muted);
           white-space: nowrap; }
-  .chip.on { background: var(--ok); border-color: var(--ok); color: #fff; }
+  /* Selected, not healthy. Green is what every pill on this page uses to mean
+     "this is fine", and spending it on "you picked this one" made the two
+     unreadable against each other. Selection is the accent. */
+  .chip.on { background: var(--accent); border-color: var(--accent); color: var(--on-fill); }
+  /* A chip that cannot be pressed must not look like the two beside it that
+     can. This one is always on and has no control behind it, so it says so
+     instead of sitting there ignoring taps. */
+  .chip.locked { background: none; border-style: dashed; color: var(--muted);
+                 font-weight: 400; }
   .chip:disabled { opacity: 1; }
   .trow { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
   .tlabel { font-size: .82rem; color: var(--muted); }
@@ -210,6 +311,23 @@ export const ADMIN_PAGE = `<!doctype html>
     .wrap table { min-width: 26rem; }
     h2 { margin-top: 1.5rem; }
     img.qr { width: 100%; max-width: 260px; height: auto; }
+    /* Five labels have to fit ~360px before the strip starts scrolling. */
+    .tabs button { font-size: .85rem; padding: .5rem .55rem; }
+    /* The four actions on ONE row of a phone. They fit on width alone; it was
+       the gaps between six flex items that pushed Save onto a second row, and
+       a second row of a bar fixed to the bottom is screen nobody gets back. */
+    .actions-in { gap: .35rem; }
+    .actions-in button { padding: .45rem .6rem; }
+    /* 44px is the documented minimum for a touch target and this page is used
+       on a phone. Chips are exempt: three 44px pills in a row read as three
+       buttons rather than one setting, so they get padding instead. The × gets
+       its hit area back in margin, so nothing around it moves. */
+    button:not(.chip):not(.x):not(.linkish):not(.btitle) { min-height: 44px; }
+    .chip { padding: .4rem .7rem; }
+    /* Padding alone only got this to 33x37 — the glyph is small and the line
+       height is 1. Ask for the target outright. */
+    button.x { min-width: 44px; min-height: 44px; padding: 0;
+               margin: -.35rem -.6rem; }
   }
   pre.cmd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem;
             background: var(--bg); border: 1px solid var(--line); border-radius: 7px;
@@ -260,6 +378,12 @@ export const ADMIN_PAGE = `<!doctype html>
   // call() takes a path relative to the mount point; api() is the same thing for
   // the /api/* group. Both spell the base out rather than relying on the browser
   // to collapse a '..' — the page has to work at /admin and at /admin/ alike.
+  // A 401 from one of these means "those credentials are wrong", not "your
+  // session ended" — a mistyped password must not open the re-auth prompt on
+  // top of the login form it was typed into.
+  function isAuthPath(path) {
+    return path === 'api/login' || path === 'api/login-meta' || path === 'api/logout';
+  }
   function call(path, init) {
     init = init || {};
     var hasBody = init.body !== undefined;
@@ -268,6 +392,9 @@ export const ADMIN_PAGE = `<!doctype html>
       headers: hasBody ? { 'content-type': 'application/json' } : {},
       body: hasBody ? JSON.stringify(init.body) : undefined,
       credentials: 'same-origin'
+    }).then(function (r) {
+      if (r.status === 401 && !isAuthPath(path)) onUnauthorized();
+      return r;
     });
   }
   function api(path, body) {
@@ -288,7 +415,10 @@ export const ADMIN_PAGE = `<!doctype html>
 
   function renderLogin(message) {
     app.innerHTML = '';
-    statusPane = null; editorPane = null; editor = null;
+    statusPane = null; editorPane = null; editor = null; reauthOpen = false;
+    chromeEl = null; navEl = null; barEl = null; securityPane = null; hosts = null;
+    tabButtons = {}; tabPanels = {}; activeTab = 'filters';
+    app.className = '';
     // The account name is checked for real now. It is still ONE account, and a
     // wrong name gives exactly the same answer as a wrong password, so it opens
     // no way to enumerate users — but it is no longer a decoration, and the
@@ -300,15 +430,26 @@ export const ADMIN_PAGE = `<!doctype html>
     var totp = h('input', { type: 'text', autocomplete: 'one-time-code',
                             inputmode: 'numeric', maxlength: '6',
                             'aria-label': 'Authenticator code',
-                            placeholder: '6-digit code from your authenticator' });
-    var totpRow = h('div', {}, [totp]);
+                            placeholder: '123456' });
+    var totpRow = h('div', {}, [
+      h('label', { class: 'flabel', for: 'totp', text: 'Authenticator code' }), totp
+    ]);
     totpRow.className = 'hidden';
-    var err = h('div', { class: 'err', text: message || '' });
+    var err = h('div', { class: 'err', role: 'alert', text: message || '' });
     var btn = h('button', { class: 'primary', type: 'submit', text: 'Sign in' });
+    // Real labels, not placeholders standing in for them: a placeholder is gone
+    // the moment anything is typed, and this form is used rarely enough that
+    // the 2FA field in particular has to still say what it wants once there are
+    // digits in it.
+    totp.setAttribute('id', 'totp');
+    user.setAttribute('id', 'user');
+    input.setAttribute('id', 'pass');
     var form = h('form', { class: 'login card pad' }, [
       h('h1', { text: 'feedgen admin' }),
       h('p', { text: 'Config and status for the feed generator.' }),
-      user, input, totpRow, h('div', { class: 'row' }, [btn]), err
+      h('label', { class: 'flabel', for: 'user', text: 'Username' }), user,
+      h('label', { class: 'flabel', for: 'pass', text: 'Password' }), input,
+      totpRow, h('div', { class: 'row' }, [btn]), err
     ]);
 
     // Ask whether a second factor is wanted, rather than showing a code field
@@ -353,9 +494,86 @@ export const ADMIN_PAGE = `<!doctype html>
     if (!narrow) user.focus();
   }
 
-  function renderStatus(s, root) {
-    root.innerHTML = '';
+  // The session idles out after an hour, and the editor is very often the only
+  // copy of an edit in progress. Replacing the whole page with the login form is
+  // the right answer when there is nothing to lose and a destructive one when
+  // there is — so which happens depends on whether there is unsaved work.
+  //
+  // NOTHING IS RETRIED. Re-sending the request that hit the 401 would mean
+  // replaying a PUT, unasked, against a config that may have moved on in the
+  // meantime — the exact clobber the digest guard exists to prevent. The
+  // operator presses the button again, and the digest check does its job.
+  var reauthOpen = false;
+  function onUnauthorized() {
+    if (editor && editor.isDirty()) { showReauth(); return; }
+    // statusPane exists only once a status call has succeeded, so it is also
+    // the answer to "was there a session to lose?" — a first visit gets the
+    // plain form rather than being told something expired that never existed.
+    renderLogin(statusPane ? 'Your session ended. Sign in again.' : '');
+  }
 
+  function showReauth() {
+    if (reauthOpen) return;
+    reauthOpen = true;
+    var user = h('input', { type: 'text', autocomplete: 'username',
+                            'aria-label': 'Username', placeholder: 'Username' });
+    var pass = h('input', { type: 'password', autocomplete: 'current-password',
+                            'aria-label': 'Admin password', placeholder: 'Password' });
+    var totp = h('input', { type: 'text', autocomplete: 'one-time-code',
+                            inputmode: 'numeric', maxlength: '6',
+                            'aria-label': 'Authenticator code',
+                            placeholder: '6-digit code' });
+    var totpRow = h('div', {}, [totp]);
+    totpRow.className = 'hidden';
+    var err = h('div', { class: 'err', role: 'alert' });
+    var btn = h('button', { class: 'primary', type: 'submit', text: 'Sign in' });
+    var form = h('form', { class: 'card pad' }, [
+      h('h1', { text: 'Session expired' }),
+      h('p', { class: 'small muted', text:
+        'Your unsaved changes are still on the page behind this. Sign in, then ' +
+        'press the same button again — nothing is re-sent for you, deliberately.' }),
+      user, pass, totpRow, h('div', { class: 'row' }, [btn]), err
+    ]);
+    var overlay = h('div', { class: 'modal' }, [form]);
+
+    var wantsTotp = false;
+    api('login-meta').then(function (r) { return r.json(); }).then(function (b) {
+      wantsTotp = !!(b && b.totpRequired);
+      if (wantsTotp) totpRow.className = '';
+    }).catch(function () { /* a sign-in attempt would say so anyway */ });
+
+    form.addEventListener('submit', function (e) {
+      if (e && e.preventDefault) e.preventDefault();
+      btn.disabled = true; err.textContent = '';
+      var payload = { user: user.value, password: pass.value };
+      if (wantsTotp) payload.totp = totp.value;
+      api('login', payload).then(function (r) {
+        return r.json().then(function (b) { return { status: r.status, body: b }; });
+      }).then(function (res) {
+        btn.disabled = false;
+        if (res.status === 200) {
+          pass.value = ''; totp.value = '';
+          overlay.remove();
+          reauthOpen = false;
+          return;
+        }
+        if (res.body.needsTotp) {
+          wantsTotp = true; totpRow.className = '';
+          totp.value = ''; totp.focus();
+        }
+        err.textContent = res.body.error || 'Sign-in failed';
+      }).catch(function () {
+        btn.disabled = false; err.textContent = 'Network error';
+      });
+    });
+
+    app.appendChild(overlay);
+  }
+
+  // The page chrome: who this box is, how old the reading is, and the two
+  // buttons that are never about one tab in particular.
+  function renderChrome(s, root) {
+    root.innerHTML = '';
     var writable = s.service.writable;
     var boxPill = h('span', {
       class: 'pill ' + (writable ? 'ok' : 'warn'),
@@ -376,6 +594,10 @@ export const ADMIN_PAGE = `<!doctype html>
       h('span', { class: 'spacer' }, []),
       stampEl, refresh, logout
     ]));
+  }
+
+  function renderStatus(s, root) {
+    root.innerHTML = '';
 
     // ── service identity
     root.appendChild(h('h2', { text: 'Service' }));
@@ -394,9 +616,6 @@ export const ADMIN_PAGE = `<!doctype html>
       ])]),
       renderIdentity()
     ]));
-
-    root.appendChild(h('h2', { text: 'Security' }));
-    root.appendChild(renderTotp());
 
     // ── ingest
     root.appendChild(h('h2', { text: 'Ingest' }));
@@ -452,15 +671,30 @@ export const ADMIN_PAGE = `<!doctype html>
       h('th', { class: 'num', text: 'Posts' }), h('th', { text: 'Retention' }),
       h('th', { class: 'num', text: 'Inc' }), h('th', { class: 'num', text: 'Exc' }),
       h('th', { class: 'num', text: 'DIDs' }), h('th', { text: 'Oldest' }),
-      h('th', { text: 'Newest' }), h('th', { text: 'Pin' })
+      h('th', { text: 'Newest' }), h('th', { text: 'Pin' }), h('th', { text: '' })
     ]);
     var body = s.feeds.map(function (f) {
+      // Reading the table and then hunting for the same feed in a dropdown was
+      // two steps for one intention.
       var name = h('td', {}, []);
-      name.appendChild(document.createTextNode(f.displayName || '—'));
+      var pick = h('button', { class: 'linkish', text: f.displayName || f.key });
+      pick.addEventListener('click', function () {
+        if (editor && editor.select) editor.select(f.key);
+        showTab('filters');
+      });
+      name.appendChild(pick);
       if (!f.routed) {
         name.appendChild(document.createTextNode(' '));
         name.appendChild(h('span', { class: 'pill bad', text: 'not routed' }));
       }
+      // The feed as readers see it. rel and the page-wide referrer policy are
+      // both required: without them this link tells Bluesky the admin URL, and
+      // the avatars are proxied precisely so that nothing here does.
+      var open = h('a', { href: 'https://bsky.app/profile/' + s.service.publisherDid +
+                                '/feed/' + f.key,
+                          target: '_blank', rel: 'noreferrer noopener',
+                          referrerpolicy: 'no-referrer',
+                          class: 'small', text: 'open ↗' });
       return h('tr', {}, [
         h('td', { class: 'mono', text: f.key }),
         name,
@@ -471,7 +705,8 @@ export const ADMIN_PAGE = `<!doctype html>
         h('td', { class: 'num', text: String(f.includeDids) }),
         h('td', { class: 'small muted', text: since(f.oldest) }),
         h('td', { class: 'small muted', text: since(f.newest) }),
-        h('td', { class: 'small', text: f.pinnedPost ? 'yes' : '—' })
+        h('td', { class: 'small', text: f.pinnedPost ? 'yes' : '—' }),
+        h('td', {}, [open])
       ]);
     });
     root.appendChild(h('div', { class: 'card wrap' }, [
@@ -502,14 +737,14 @@ export const ADMIN_PAGE = `<!doctype html>
   //
   // Block ORDER carries no meaning here either — includes are OR'd against each
   // other and so are excludes — so there is nothing to drag.
-  function renderConfigEditor(s, root) {
+  function renderConfigEditor(s, hosts) {
     var full = null, digest = null, writable = false, key = null, draft = null;
     // A snapshot of the open feed as it was loaded or last saved. Anything
     // else means unsaved work, which freezes the status refresh.
     var pristine = '';
     function isDirty() { return !!draft && JSON.stringify(draft) !== pristine; }
 
-    var feedSel = h('select', { 'aria-label': 'Feed to edit' });
+    var feedSel = h('select', { id: 'feedsel', 'aria-label': 'Feed to edit' });
     var pickerNote = h('div', { class: 'small muted pickernote' });
     var picker = h('div', {}, [
       h('div', { class: 'picker' }, [
@@ -518,37 +753,217 @@ export const ADMIN_PAGE = `<!doctype html>
       pickerNote,
     ]);
     var blocks = h('div', {}, []);
-    var msg = h('div', { class: 'msg' });
+    var changesCard = h('div', {}, []);
+    // role=status, here and on every other .msg: this div is the whole of the
+    // page's feedback — "Saved", "Valid", the error from a refused write — and
+    // without it a screen reader is told none of it.
+    var msg = h('div', { class: 'msg', role: 'status' });
+    var undoBar = h('div', {}, []);
     var results = h('div', {}, []);
 
-    var btnValidate = h('button', { text: 'Validate' });
-    var btnMeasure = h('button', { text: 'Measure this edit' });
+    // Short labels, because all four have to fit one row of a phone: wrapped
+    // onto three rows this bar ate a third of the screen and still covered the
+    // text it was floating over. The long form is in the title.
+    var btnValidate = h('button', { title: 'Compile the candidate config without saving it',
+                                    text: 'Validate' });
+    var btnMeasure = h('button', { title: 'Replay this edit over the posts this feed already holds',
+                                   text: 'Measure' });
     var btnSave = h('button', { class: 'primary', text: 'Save' });
-    var btnReload = h('button', { text: 'Reload' });
-    var dirtyFlag = h('span', { class: 'small warn-text' });
-    var toolbar = h('div', { class: 'toolbar' }, [
-      btnValidate, btnMeasure, dirtyFlag,
-      h('span', { class: 'spacer' }, []), btnReload, btnSave
-    ]);
+    var btnReload = h('button', { title: 'Re-read filters.json from disk, discarding this draft',
+                                  text: 'Reload' });
+    var dirtyFlag = h('button', { class: 'linkish warn-text' });
+    dirtyFlag.addEventListener('click', function () {
+      showTab('filters');
+      if (changesCard.scrollIntoView) changesCard.scrollIntoView({ block: 'center' });
+    });
     function showDirty() {
-      dirtyFlag.textContent = isDirty()
-        ? 'unsaved changes — auto-refresh paused' : '';
+      // It used to say "auto-refresh paused". There has been no auto-refresh
+      // since af80d42 removed the timer, so it was describing a mechanism that
+      // no longer exists.
+      // By the name on the picker, not the rkey: the marker can be read from a
+      // tab where the rkey is not on screen, and a record key identifies a feed
+      // to the config, not to a person.
+      var name = (full && full.feeds[key] && full.feeds[key].displayName) || key;
+      var dirty = isDirty();
+      var list = dirty ? changes() : [];
+      // Belt and braces: the draft differs but nothing below recognised how.
+      if (dirty && !list.length) list = ['An edit this summary does not model.'];
+      dirtyFlag.textContent = dirty
+        ? list.length + (list.length === 1 ? ' unsaved change to ' : ' unsaved changes to ') + name
+        : '';
+      paintChanges(list);
+      paintBar();
     }
 
-    root.appendChild(h('h2', { text: 'Filters' }));
-    root.appendChild(picker);
-    root.appendChild(blocks);
-    root.appendChild(toolbar);
-    root.appendChild(msg);
-    root.appendChild(results);
-    renderProbe(root);
-    renderWhyNot(root);
-    renderWizard(root);
+    // The picker is chrome, not part of a tab: Filters, Lab and Record all
+    // answer for one feed, and which feed you mean does not change when you
+    // move between them.
+    hosts.picker.appendChild(picker);
 
-    function say(t, cls) { msg.className = 'msg ' + (cls || ''); msg.textContent = t; }
+    // The actions live in the bar fixed to the bottom of the window. They used
+    // to sit halfway down the page, after fifteen cards, which meant the most
+    // frequent thing anyone does here — Save — was reliably off screen, and so
+    // was the only sign that there was anything to save.
+    // Three rows, not one wrapping row. The marker names the feed, which runs
+    // to about 230px — put it in with the buttons and they wrap, and a bar
+    // fixed to the bottom of a phone spends that second row forever. On its own
+    // line it collapses to nothing while there is nothing to say.
+    hosts.actions.appendChild(h('div', { class: 'actions-in' }, [dirtyFlag]));
+    hosts.actions.appendChild(h('div', { class: 'actions-in' }, [
+      h('span', { class: 'spacer' }, []),
+      btnValidate, btnMeasure, btnReload, btnSave
+    ]));
+    hosts.actions.appendChild(h('div', { class: 'actions-in' }, [msg]));
+
+    // At the top, not the foot: it is what you want to read on arriving at this
+    // tab, and reading it should not require scrolling past everything it is
+    // summarising.
+    hosts.filters.appendChild(changesCard);
+    hosts.filters.appendChild(blocks);
+    hosts.filters.appendChild(undoBar);
+    hosts.filters.appendChild(results);
+    // The record and the filters are different objects in different places — one
+    // on the PDS, one in filters.json — and they now look it. Pressing Save can
+    // no longer be mistaken for something that might publish, because the two
+    // are not on the same screen any more.
+    var recordHost = h('div', {}, []);
+    // No heading above this one: the card already says what it is, and a tab
+    // titled Record over a heading over a card saying the same thing three
+    // times was three times too many.
+    hosts.record.appendChild(recordHost);
+    renderProbe(hosts.lab);
+    renderWhyNot(hosts.lab);
+    renderWizard(hosts.record);
+
+    // A message lands IN the bar, so writing one changes how tall it is.
+    // ── what Save is about to do, in words
+    //
+    // The confirm() this replaces asked "Save <rkey>?" — the one thing the
+    // operator already knew — and said nothing about the content. After
+    // fifteen blocks nobody can list from memory what they touched, so the
+    // dialog was answered yes every time, which is how a dialog stops being a
+    // check and becomes a reflex. A list of the actual changes is what a
+    // confirmation was supposed to be, and it is on screen the whole time
+    // rather than in the way at the last moment.
+    var TOGGLE_LABEL = { selfLabeledPosts: 'Self-labelled posts',
+                         gifPosts: 'GIF posts', quotePosts: 'Quote posts' };
+    var TOGGLE_DEFAULT = { selfLabeledPosts: 'exclude', gifPosts: 'allow',
+                           quotePosts: 'allow' };
+    function shortP(p) {
+      var t = String((p && (p.comment || p.pattern)) || '(empty)');
+      return t.length > 44 ? t.slice(0, 44) + '…' : t;
+    }
+    function targetWords(p, kind) {
+      var t = targetOf(p, kind);
+      return t === 'text' ? 'post text'
+        : t === 'text|alt_text' ? 'text + alt' : 'text + alt + links';
+    }
+    function flagsOf(p) { return p.flags === undefined ? 'iu' : p.flags; }
+
+    // Pairing old against new, because there is no id to match on and none may
+    // be invented — anything added to a pattern object gets written to
+    // filters.json. Three passes, weakest last: same expression, then same
+    // comment (the expression was edited but it is the same editorial rule),
+    // then one-left-each-side, which is an edit to an uncommented pattern
+    // rather than a removal and an unrelated addition.
+    function patternChanges(oldList, newList, kind, out) {
+      var olds = (oldList || []).slice(), news = (newList || []).slice();
+      var pairs = [];
+      function pairOff(match) {
+        olds.slice().forEach(function (o) {
+          var m = news.filter(function (n) { return match(o, n); })[0];
+          if (!m) return;
+          pairs.push([o, m]);
+          olds.splice(olds.indexOf(o), 1);
+          news.splice(news.indexOf(m), 1);
+        });
+      }
+      pairOff(function (o, n) { return o.pattern === n.pattern; });
+      pairOff(function (o, n) { return !!o.comment && o.comment === n.comment; });
+      if (olds.length === 1 && news.length === 1) pairs.push([olds.pop(), news.pop()]);
+
+      var word = kind === 'include' ? 'Keep' : 'Remove';
+      pairs.forEach(function (pr) {
+        var o = pr[0], n = pr[1], name = word + ' "' + shortP(n) + '"';
+        if (o.pattern !== n.pattern) out.push(name + ': expression edited');
+        if (targetOf(o, kind) !== targetOf(n, kind)) {
+          out.push(name + ': target ' + targetWords(o, kind) + ' → ' + targetWords(n, kind));
+        }
+        if (flagsOf(o) !== flagsOf(n)) out.push(name + ': case sensitivity changed');
+        if ((o.comment || '') !== (n.comment || '')) out.push(name + ': note changed');
+      });
+      olds.forEach(function (o) { out.push(word + ' "' + shortP(o) + '": REMOVED'); });
+      news.forEach(function (n) { out.push(word + ' "' + shortP(n) + '": added'); });
+    }
+
+    function changes() {
+      var out = [];
+      if (!draft) return out;
+      var was;
+      try { was = JSON.parse(pristine); } catch (e) { return out; }
+
+      var a = was.retention || {}, b = draft.retention || {};
+      if (a.type !== b.type || a.value !== b.value) {
+        out.push('Retention ' + (a.value === undefined ? 'unset' : a.value + ' ' + a.type) +
+                 ' → ' + (b.value === undefined ? 'unset' : b.value + ' ' + b.type));
+      }
+      patternChanges(was.includePatterns, draft.includePatterns, 'include', out);
+      patternChanges(was.excludePatterns, draft.excludePatterns, 'exclude', out);
+      Object.keys(TOGGLE_LABEL).forEach(function (k) {
+        var x = was[k] || TOGGLE_DEFAULT[k], y = draft[k] || TOGGLE_DEFAULT[k];
+        if (x !== y) out.push(TOGGLE_LABEL[k] + ': ' + x + ' → ' + y);
+      });
+      if ((was.excludeListUri || '') !== (draft.excludeListUri || '')) {
+        out.push(draft.excludeListUri ? 'Moderation list set' : 'Moderation list cleared');
+      }
+      if ((was.pinnedPost || '') !== (draft.pinnedPost || '')) {
+        out.push(draft.pinnedPost ? 'Pinned post set' : 'Pinned post cleared');
+      }
+      if ((was.includeDids || []).join() !== (draft.includeDids || []).join()) {
+        out.push('Author DIDs: ' + (was.includeDids || []).length + ' → ' +
+                 (draft.includeDids || []).length);
+      }
+      return out;
+    }
+
+    // Rebuilt only when the wording actually changes, so typing inside one
+    // pattern does not redraw this on every keystroke.
+    var lastChangeKey = null;
+    function paintChanges(list) {
+      var k = list.length ? list.join('\\n') : '';
+      if (k === lastChangeKey) return;
+      lastChangeKey = k;
+      changesCard.innerHTML = '';
+      if (!list.length) return;
+      changesCard.appendChild(h('div', { class: 'card pad', role: 'status' }, [
+        h('div', { class: 'bhead' }, [
+          h('span', { class: 'blabel', text: 'Unsaved changes (' + list.length + ')' })
+        ]),
+        h('ul', { class: 'changes' }, list.map(function (t) {
+          return h('li', { class: 'small', text: t });
+        })),
+        h('p', { class: 'small muted', text:
+          'Save writes filters.json on this box, keeping a backup of the ' +
+          'current one first. It goes live within about ten seconds, and the ' +
+          'auto-purge replays it over stored posts within five minutes.' })
+      ]));
+    }
+
+    function say(t, cls) {
+      msg.className = 'msg ' + (cls || '');
+      msg.textContent = t;
+      paintBar();
+    }
     function busy(on) {
       [btnValidate, btnMeasure, btnSave, btnReload].forEach(function (b) { b.disabled = on; });
-      if (!on) btnSave.disabled = !writable;
+      if (!on) {
+        btnSave.disabled = !writable;
+        // The two slow ones say so on themselves while they run. A greyed-out
+        // button with the explanation somewhere else on the page is how you
+        // press it twice. Restored here so every exit path restores them.
+        btnMeasure.textContent = 'Measure';
+        btnSave.textContent = 'Save';
+      }
     }
     // The whole config, with only the edited feed replaced. Anything this
     // editor does not model — a comment key, another feed — is carried through
@@ -560,11 +975,43 @@ export const ADMIN_PAGE = `<!doctype html>
     }
 
     // ── block scaffolding
+    // opts.collapsible turns the label into a disclosure. The body is HIDDEN,
+    // never removed — a collapsed pattern keeps the textarea it was typed into,
+    // so reopening it shows that node and its undo history rather than a fresh
+    // copy carrying the same characters.
     function block(label, controls, opts) {
       opts = opts || {};
-      var head = h('div', { class: 'bhead' }, [h('span', { class: 'blabel', text: label })]);
+      var body = h('div', { class: 'bbody' }, controls);
+      var sub = null;
+      var head = h('div', { class: 'bhead' }, []);
+
+      if (opts.collapsible) {
+        var open = !!opts.open;
+        var caret = h('span', { class: 'caret', text: '' });
+        var title = h('button', { class: 'btitle' }, [
+          caret, h('span', { class: 'ptitle', text: label })
+        ]);
+        // A one-line preview of what is inside, so a shut block still says which
+        // rule it is. Hidden when open, because the field below shows it.
+        sub = opts.subtitle
+          ? h('div', { class: 'mono small muted bsub', text: opts.subtitle })
+          : null;
+        var paint = function () {
+          caret.textContent = open ? '▾' : '▸';
+          title.setAttribute('aria-expanded', open ? 'true' : 'false');
+          body.className = 'bbody' + (open ? '' : ' hidden');
+          if (sub) sub.className = 'mono small muted bsub' + (open ? ' hidden' : '');
+        };
+        title.addEventListener('click', function () { open = !open; paint(); });
+        paint();
+        head.appendChild(title);
+      } else {
+        head.appendChild(h('span', { class: 'blabel', text: label }));
+      }
+
       if (opts.onRemove) {
-        var x = h('button', { class: 'x', title: 'Remove this block', text: '×' });
+        var x = h('button', { class: 'x', title: 'Remove this block',
+                              'aria-label': 'Remove ' + label, text: '×' });
         x.addEventListener('click', opts.onRemove);
         head.appendChild(h('span', { class: 'spacer' }, []));
         head.appendChild(x);
@@ -572,14 +1019,109 @@ export const ADMIN_PAGE = `<!doctype html>
         head.appendChild(h('span', { class: 'spacer' }, []));
         head.appendChild(h('span', { class: 'pill idle', text: 'fixed' }));
       }
-      var body = h('div', { class: 'bbody' }, controls);
-      return h('div', { class: 'card pad block' + (opts.fixed ? ' inactive' : '') }, [head, body]);
+
+      var kids = sub ? [head, sub, body] : [head, body];
+      return h('div', { class: 'card pad block' + (opts.fixed ? ' inactive' : '') }, kids);
+    }
+
+    // What a shut pattern block calls itself. The comment first, because that is
+    // where the editorial reason lives ("storefronts / deals / affiliate") and a
+    // list of those reads as the policy it is; the expression itself otherwise;
+    // and the position never, because order carries no meaning here and a "#3"
+    // goes stale the moment anything above it is removed.
+    function patternTitle(p) {
+      var t = String(p.comment || p.pattern || '').trim();
+      if (!t) return '(empty pattern)';
+      return t.length > 60 ? t.slice(0, 60) + '…' : t;
+    }
+    function groupHead(title, addBtn, hint, counters) {
+      var kids = [h('h3', { class: 'gtitle', text: title }),
+                  h('span', { class: 'spacer' }, [])];
+      if (counters) {
+        // One press fills in every block's count. The corpus is fetched once
+        // per feed and cached, so only the first of these is slow — which is
+        // what makes a whole config worth measuring at all rather than one
+        // expression at a time.
+        var all = h('button', { text: 'Count all' });
+        all.addEventListener('click', function () {
+          all.disabled = true;
+          var running = counters.map(function (fn) { return fn(); });
+          Promise.all(running).then(function () { all.disabled = false; })
+            .catch(function () { all.disabled = false; });
+        });
+        kids.push(all);
+      }
+      kids.push(addBtn);
+      return h('div', {}, [
+        h('div', { class: 'ghead' }, kids),
+        h('p', { class: 'small muted ghint', text: hint })
+      ]);
+    }
+    function patternSub(p) {
+      if (!p.comment) return '';
+      var t = String(p.pattern || '');
+      return t.length > 80 ? t.slice(0, 80) + '…' : t;
     }
 
     function chip(text, on, onClick) {
+      if (!onClick) {
+        var locked = h('button', { class: 'chip locked', disabled: 'disabled',
+                                   text: text + ' — always' });
+        locked.disabled = true;
+        return locked;
+      }
       var b = h('button', { class: 'chip' + (on ? ' on' : ''), text: text });
-      if (onClick) b.addEventListener('click', onClick); else b.disabled = true;
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      b.addEventListener('click', onClick);
       return b;
+    }
+    // Repaints ONE chip. Toggling a target used to call redraw(), which rebuilt
+    // every block on the page — and rebuilding a textarea throws away its undo
+    // history, so a chip pressed halfway through writing an alternation cost
+    // whoever pressed it their Cmd+Z. The page's own rule about not rebuilding
+    // anything under someone using it holds when the trigger is that person too.
+    function paintChip(b, on) {
+      b.className = 'chip' + (on ? ' on' : '');
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+
+    // Removing a pattern is one small × away from an alternation built up over
+    // months, and the draft is its only copy until Save. The block is HIDDEN
+    // rather than dropped, so Undo puts back the very same node — text, caret
+    // position and undo history included — instead of a reconstruction of it.
+    var undoState = null;
+    function removePattern(p, kind, el) {
+      var list = (kind === 'include' ? draft.includePatterns : draft.excludePatterns) || [];
+      var at = list.indexOf(p);
+      if (at < 0) return;
+      list.splice(at, 1);
+      el.className = el.className + ' hidden';
+      undoState = { p: p, kind: kind, at: at, el: el };
+      paintUndo();
+      showDirty();
+    }
+    function paintUndo() {
+      undoBar.innerHTML = '';
+      if (!undoState) return;
+      var label = String(undoState.p.comment || undoState.p.pattern || '(empty pattern)');
+      if (label.length > 48) label = label.slice(0, 48) + '…';
+      var btn = h('button', { text: 'Undo' });
+      btn.addEventListener('click', function () {
+        var u = undoState;
+        var list = u.kind === 'include'
+          ? (draft.includePatterns = draft.includePatterns || [])
+          : (draft.excludePatterns = draft.excludePatterns || []);
+        list.splice(Math.min(u.at, list.length), 0, u.p);
+        u.el.className = u.el.className.replace(' hidden', '');
+        undoState = null;
+        paintUndo();
+        showDirty();
+      });
+      undoBar.appendChild(h('div', { class: 'card pad row wrapx', role: 'status' }, [
+        h('span', { class: 'small', text: 'Removed: ' + label }), btn,
+        h('span', { class: 'small muted',
+                    text: 'Nothing is written until you press Save.' })
+      ]));
     }
 
     function checkbox(label, checked, onChange) {
@@ -597,7 +1139,7 @@ export const ADMIN_PAGE = `<!doctype html>
     function targetOf(p, kind) {
       return p.target || (kind === 'include' ? 'text|alt_text' : 'text|alt_text|link');
     }
-    function patternBlock(p, kind, i) {
+    function patternBlock(p, kind, counters) {
       var target = targetOf(p, kind);
       var alt = target.indexOf('alt_text') >= 0;
       var link = target.indexOf('link') >= 0;
@@ -613,43 +1155,97 @@ export const ADMIN_PAGE = `<!doctype html>
         if (comment.value) p.comment = comment.value; else delete p.comment;
       });
 
+      var altChip, linkChip;
       function setTarget() {
         p.target = link ? 'text|alt_text|link' : alt ? 'text|alt_text' : 'text';
-        redraw();
+        paintChip(altChip, alt);
+        paintChip(linkChip, link);
+        showDirty();
       }
+      altChip = chip('Image Alt Text', alt, function () {
+        alt = !alt; if (!alt) link = false; setTarget();
+      });
+      linkChip = chip('Link', link, function () {
+        link = !link; if (link) alt = true; setTarget();
+      });
       var chips = h('div', { class: 'chips' }, [
-        chip('Post Text', true, null),
-        chip('Image Alt Text', alt, function () {
-          alt = !alt; if (!alt) link = false; setTarget();
-        }),
-        chip('Link', link, function () {
-          link = !link; if (link) alt = true; setTarget();
-        })
+        chip('Post Text', true, null), altChip, linkChip
       ]);
 
+      // The rule about ANY-of-these used to be repeated on every block. On the
+      // Vinyl feed that is thirteen copies of one sentence, which is the volume
+      // at which a hint stops being read at all. It is said once, in the group
+      // header these blocks now sit under.
       var flagsRow = h('div', { class: 'row wrapx' }, [
         checkbox('Case sensitive', sensitive, function (on) {
           // Preserve any other flag someone set by hand; only 'i' is ours.
           var base = (p.flags === undefined ? 'iu' : p.flags).replace(/i/g, '');
           var next = on ? base : 'i' + base;
           if (next === 'iu') delete p.flags; else p.flags = next;
-        }),
-        h('span', { class: 'small muted', text:
-          kind === 'include'
-            ? 'A post enters the feed if ANY include pattern matches.'
-            : 'A post is dropped if ANY exclude pattern matches.' })
+        })
       ]);
 
-      return block(
-        (kind === 'include' ? 'RegEx — keep' : 'RegEx — remove') + ' #' + (i + 1),
+      // Counting this very pattern, without copying it into the Lab first.
+      //
+      // The method this whole project runs on is: edit a token, measure, decide.
+      // It used to mean selecting the expression, switching to the Lab, pasting
+      // it, and setting the target again by hand — four steps of clerical work
+      // between having a question and having the answer, which is how measuring
+      // stops happening. lab/probe already takes exactly what a block holds, so
+      // the block can ask on its own behalf.
+      //
+      // For an exclude, the count IS the answer: that many stored posts leave.
+      // A plain button, NOT a chip. The chips a few lines above are state — the
+      // targets this pattern reads — and this is an action. They were the same
+      // shape and sat in the same block.
+      var countBtn = h('button', { text: 'Count matches' });
+      var countOut = h('span', { class: 'small muted' });
+      function run() {
+        // A removed block keeps its node so Undo can restore it; it must not
+        // still be answering questions in the meantime.
+        var list = (kind === 'include' ? draft.includePatterns : draft.excludePatterns) || [];
+        if (list.indexOf(p) < 0) return Promise.resolve();
+        if (!String(p.pattern || '').trim()) {
+          countOut.className = 'small muted'; countOut.textContent = '';
+          return Promise.resolve();
+        }
+        countBtn.disabled = true;
+        countOut.className = 'small muted'; countOut.textContent = 'counting…';
+        return call('lab/probe', { body: { feed: key, pattern: p.pattern,
+          flags: p.flags === undefined ? 'iu' : p.flags,
+          target: targetOf(p, kind) } }).then(function (r) {
+          return r.json().then(function (b) { return { status: r.status, body: b }; });
+        }).then(function (res) {
+          countBtn.disabled = false;
+          if (res.status !== 200) {
+            countOut.className = 'small warn-text'; countOut.textContent = res.body.error;
+            return;
+          }
+          var x = res.body.result;
+          countOut.className = 'small ' + (x.hits ? '' : 'muted');
+          countOut.textContent = kind === 'exclude'
+            ? x.hits + ' of ' + x.stored + ' stored would go (' + x.hitsPct + '%)'
+            : 'touches ' + x.hits + ' of ' + x.stored + ' stored (' + x.hitsPct + '%)';
+        }).catch(function (e) {
+          countBtn.disabled = false;
+          countOut.className = 'small warn-text';
+          countOut.textContent = 'Network error: ' + e.message;
+        });
+      }
+      countBtn.addEventListener('click', run);
+      if (counters) counters.push(run);
+
+      // A block with something in it opens shut; one just added opens open,
+      // because the reason it exists is that something is about to be typed.
+      var el = block(
+        patternTitle(p),
         [area, h('div', { class: 'trow' }, [h('span', { class: 'tlabel', text: 'Target' }), chips]),
-         flagsRow, comment],
-        { onRemove: function () {
-            var list = kind === 'include' ? draft.includePatterns : draft.excludePatterns;
-            list.splice(list.indexOf(p), 1);
-            redraw();
-          } }
+         flagsRow, comment,
+         h('div', { class: 'row wrapx' }, [countBtn, countOut])],
+        { onRemove: function () { removePattern(p, kind, el); },
+          collapsible: true, open: !p.pattern, subtitle: patternSub(p) }
       );
+      return el;
     }
 
     function selectBlock(label, value, options, onChange, note) {
@@ -665,30 +1261,18 @@ export const ADMIN_PAGE = `<!doctype html>
       return block(label, [h('div', { class: 'row wrapx' }, kids)]);
     }
 
-    function redraw() {
-      blocks.innerHTML = '';
-      if (!draft) return;
-      blocks.appendChild(recordCard());
-
-      // Input — the closest thing this engine has to SkyFeed's source block.
-      var retType = (draft.retention && draft.retention.type) || 'hours';
+    // The value control for whichever retention unit is chosen. Split out of
+    // redraw() because switching the unit used to rebuild every block on the
+    // page to replace this one field.
+    // Read, never write: redraw() must not touch the draft. Defaulting a missing
+    // retention INTO it would mark a feed that has none as edited the instant it
+    // is opened, and then save a key nobody added.
+    function retentionType() {
+      return (draft.retention && draft.retention.type) || 'hours';
+    }
+    function retentionValue() {
+      var retType = retentionType();
       var retVal = (draft.retention && draft.retention.value) || 72;
-      var unit = h('select', {}, []);
-      [['hours', 'by age'], ['count', 'by count']].forEach(function (o) {
-        var opt = h('option', { value: o[0], text: o[1] });
-        if (o[0] === retType) opt.setAttribute('selected', 'selected');
-        unit.appendChild(opt);
-      });
-      unit.addEventListener('change', function () {
-        // The two units do not convert into each other — 500 posts is not 500
-        // hours — so switching picks that unit's usual value rather than
-        // carrying a number across that would mean something else.
-        draft.retention = unit.value === 'hours'
-          ? { type: 'hours', value: 72 }
-          : { type: 'count', value: 500 };
-        redraw();
-      });
-
       var value;
       if (retType === 'hours') {
         var LABEL = { 3: '3 hours', 12: '12 hours', 24: '24 hours (1 day)',
@@ -700,7 +1284,7 @@ export const ADMIN_PAGE = `<!doctype html>
           choices.push(retVal);
           choices.sort(function (a, b) { return a - b; });
         }
-        value = h('select', {}, []);
+        value = h('select', { 'aria-label': 'Keep posts for' }, []);
         choices.forEach(function (v) {
           var opt = h('option', { value: String(v),
             text: LABEL[v] || (v + ' hours (kept as set)') });
@@ -712,19 +1296,51 @@ export const ADMIN_PAGE = `<!doctype html>
           draft.retention = { type: 'hours', value: parseInt(value.value, 10) };
         });
       } else {
-        value = h('input', { type: 'number', min: '1', class: 'num' });
+        value = h('input', { type: 'number', min: '1', class: 'num',
+                             'aria-label': 'Posts to keep' });
         value.value = String(retVal);
         value.addEventListener('input', function () {
           var v = parseInt(value.value, 10);
           if (v > 0) draft.retention = { type: 'count', value: v };
         });
       }
+      return value;
+    }
+
+    function redraw() {
+      blocks.innerHTML = '';
+      // The hidden nodes an Undo would have restored went with it.
+      undoState = null;
+      paintUndo();
+      if (!draft) return;
+
+      // Input — the closest thing this engine has to SkyFeed's source block.
+      var unit = h('select', { 'aria-label': 'Retention unit' }, []);
+      [['hours', 'by age'], ['count', 'by count']].forEach(function (o) {
+        var opt = h('option', { value: o[0], text: o[1] });
+        if (o[0] === retentionType()) opt.setAttribute('selected', 'selected');
+        unit.appendChild(opt);
+      });
+      var valueSlot = h('span', {}, [retentionValue()]);
+      var unitNote = h('span', { class: 'small muted',
+        text: retentionType() === 'count' ? 'newest posts' : '' });
+      unit.addEventListener('change', function () {
+        // The two units do not convert into each other — 500 posts is not 500
+        // hours — so switching picks that unit's usual value rather than
+        // carrying a number across that would mean something else.
+        draft.retention = unit.value === 'hours'
+          ? { type: 'hours', value: 72 }
+          : { type: 'count', value: 500 };
+        valueSlot.innerHTML = '';
+        valueSlot.appendChild(retentionValue());
+        unitNote.textContent = unit.value === 'count' ? 'newest posts' : '';
+        showDirty();
+      });
 
       blocks.appendChild(block('Input', [
         h('div', { class: 'row wrapx' }, [
-          h('span', { text: 'Entire network, continuously. Keep' }), unit, value,
-          h('span', { class: 'small muted',
-            text: retType === 'count' ? 'newest posts' : '' })
+          h('span', { text: 'Entire network, continuously. Keep' }),
+          unit, valueSlot, unitNote
         ]),
         h('p', { class: 'small muted', text:
           'There is no time window on the source: this box reads the firehose ' +
@@ -737,9 +1353,30 @@ export const ADMIN_PAGE = `<!doctype html>
       // nobody's benefit. The value already on disk is carried through
       // untouched, because draft starts as a copy of the whole feed object.
 
-      (draft.includePatterns || []).forEach(function (p, i) {
-        blocks.appendChild(patternBlock(p, 'include', i));
+      // Each group gets a container of its own, so "+ Add" can append into it
+      // instead of calling redraw() — which is the last interactive path that
+      // used to rebuild the page under whoever was typing. The button lives in
+      // the group header rather than at the foot of the page, where it used to
+      // sit behind three cards of read-once explanation.
+      var incBox = h('div', {}, []);
+      var incCounters = [];
+      var addInc = h('button', { text: '+ Add pattern' });
+      addInc.addEventListener('click', function () {
+        draft.includePatterns = draft.includePatterns || [];
+        var p = { pattern: '' };
+        draft.includePatterns.push(p);
+        incBox.appendChild(patternBlock(p, 'include', incCounters));
+        showDirty();
       });
+      (draft.includePatterns || []).forEach(function (p) {
+        incBox.appendChild(patternBlock(p, 'include', incCounters));
+      });
+      blocks.appendChild(groupHead('Keep', addInc,
+        'A post enters the feed if ANY of these match. Order does not matter. ' +
+        'Counting an include says what it touches of what is already here — it ' +
+        'cannot say what it would newly bring in, because those posts were ' +
+        'never stored.', incCounters));
+      blocks.appendChild(incBox);
 
       if ((draft.includeDids || []).length) {
         var dids = h('textarea', { class: 'pat', spellcheck: 'false' });
@@ -752,9 +1389,24 @@ export const ADMIN_PAGE = `<!doctype html>
             'nothing else can enter the feed.' })]));
       }
 
-      (draft.excludePatterns || []).forEach(function (p, i) {
-        blocks.appendChild(patternBlock(p, 'exclude', i));
+      var excBox = h('div', {}, []);
+      var excCounters = [];
+      var addExc = h('button', { text: '+ Add pattern' });
+      addExc.addEventListener('click', function () {
+        draft.excludePatterns = draft.excludePatterns || [];
+        var p = { pattern: '' };
+        draft.excludePatterns.push(p);
+        excBox.appendChild(patternBlock(p, 'exclude', excCounters));
+        showDirty();
       });
+      (draft.excludePatterns || []).forEach(function (p) {
+        excBox.appendChild(patternBlock(p, 'exclude', excCounters));
+      });
+      blocks.appendChild(groupHead('Remove', addExc,
+        'A post is dropped if ANY of these match. Order does not matter. ' +
+        'Counting an exclude is exact: that many stored posts would leave.',
+        excCounters));
+      blocks.appendChild(excBox);
 
       blocks.appendChild(selectBlock('Remove if — item has labels',
         draft.selfLabeledPosts || 'exclude',
@@ -839,35 +1491,21 @@ export const ADMIN_PAGE = `<!doctype html>
           '1 with the Pinned badge. Whether it survives un-pinning depends on ' +
           'whether it matches this feed on its own.' })]));
 
-      blocks.appendChild(block('Remove if — item is a reply',
-        [h('p', { class: 'small muted', text:
-          'Always on. Every one of these feeds dropped replies under SkyFeed and ' +
-          'the ingest keeps doing it — there is no setting.' })], { fixed: true }));
-      blocks.appendChild(block('Remove if — item is a repost',
-        [h('p', { class: 'small muted', text:
+      // Three cards of read-once explanation used to sit between the exclude
+      // patterns and the buttons that add one. They describe things this engine
+      // does not offer a control for, so they are worth saying exactly once and
+      // worth folding away afterwards.
+      blocks.appendChild(block('Always applied — no setting for these', [
+        h('p', { class: 'small muted', text:
+          'Replies are removed. Every one of these feeds dropped them under ' +
+          'SkyFeed and the ingest keeps doing it.' }),
+        h('p', { class: 'small muted', text:
           'Reposts are a different collection and are never indexed, so there is ' +
-          'nothing to remove.' })], { fixed: true }));
-      blocks.appendChild(block('Sort by',
-        [h('p', { class: 'small muted', text:
-          'indexedAt, descending — stamped from the Jetstream event time, so a ' +
-          'replayed post lands in its true position rather than on top.' })],
-        { fixed: true }));
-
-      var addInc = h('button', { text: '+ RegEx — keep' });
-      addInc.addEventListener('click', function () {
-        draft.includePatterns = draft.includePatterns || [];
-        draft.includePatterns.push({ pattern: '' });
-        redraw();
-      });
-      var addExc = h('button', { text: '+ RegEx — remove' });
-      addExc.addEventListener('click', function () {
-        draft.excludePatterns = draft.excludePatterns || [];
-        draft.excludePatterns.push({ pattern: '' });
-        redraw();
-      });
-      blocks.appendChild(h('div', { class: 'toolbar' }, [addInc, addExc,
-        h('span', { class: 'small muted', text:
-          'Order does not matter: includes are OR-ed together, and so are excludes.' })]));
+          'nothing to remove.' }),
+        h('p', { class: 'small muted', text:
+          'Sort is indexedAt descending — stamped from the Jetstream event time, ' +
+          'so a replayed post lands in its true position rather than on top.' })
+      ], { fixed: true, collapsible: true, open: false }));
       showDirty();
     }
 
@@ -877,8 +1515,19 @@ export const ADMIN_PAGE = `<!doctype html>
     // the PDS. Keeping them in a separate card with its own button is the
     // point: pressing Save below must never look like it might publish them,
     // and publishing must never look like it might change a filter.
-    var records = {};      // rkey -> the live record, once fetched
-    var pendingAvatar = null;  // {base64, dataUrl, name} chosen but not published
+    // Three maps, all keyed by rkey, and all of them OUTSIDE the DOM on purpose.
+    // This card is rebuilt by every redraw(), and it used to be refilled from
+    // the last PUBLISHED record each time — so a description typed here and not
+    // yet published was silently reverted by any redraw, including one caused by
+    // pressing an unrelated chip. Holding the state out here is the same
+    // treatment jetstream/identity/totpEnrol already get in the status pane.
+    //
+    // Keying the pending avatar by rkey matters twice over: it was a single
+    // variable, so choosing an image for one feed and then switching feeds left
+    // it armed — and Publish would have written that image to the OTHER feed.
+    var records = {};         // rkey -> the live record, once fetched
+    var recordEdits = {};     // rkey -> {displayName, description} typed, unpublished
+    var pendingAvatars = {};  // rkey -> {base64, name, note} chosen, unpublished
 
     function credsRow(id) {
       var handle = h('input', { type: 'text', autocomplete: 'username',
@@ -897,6 +1546,10 @@ export const ADMIN_PAGE = `<!doctype html>
     }
 
     function recordCard() {
+      // Pinned for the lifetime of THIS card. Reading the outer key from a
+      // callback would ask which feed is open now, not which one this card was
+      // built for — and those stop being the same the moment feeds are switched.
+      var myKey = key;
       var card = h('div', { class: 'card pad block' }, []);
       var head = h('div', { class: 'bhead' }, [
         h('span', { class: 'blabel', text: 'Feed record — what readers see' })
@@ -907,10 +1560,10 @@ export const ADMIN_PAGE = `<!doctype html>
       card.appendChild(head);
       card.appendChild(bodyEl);
 
-      var rec = records[key];
+      var rec = records[myKey];
       if (rec) fill(bodyEl, rec);
       else {
-        call('feed/' + encodeURIComponent(key) + '/record').then(function (r) {
+        call('feed/' + encodeURIComponent(myKey) + '/record').then(function (r) {
           return r.json().then(function (b) { return { status: r.status, body: b }; });
         }).then(function (res) {
           bodyEl.innerHTML = '';
@@ -919,7 +1572,7 @@ export const ADMIN_PAGE = `<!doctype html>
               'No published record for this rkey: ' + res.body.error }));
             return;
           }
-          records[key] = res.body.record;
+          records[myKey] = res.body.record;
           fill(bodyEl, res.body.record);
         }).catch(function (e) {
           bodyEl.innerHTML = '';
@@ -931,40 +1584,59 @@ export const ADMIN_PAGE = `<!doctype html>
 
       function fill(el, rec) {
         el.innerHTML = '';
+        // What is on screen is the unpublished edit if there is one, and the
+        // published value otherwise — never the published value on top of an
+        // edit that is still pending.
+        var edit = recordEdits[myKey] || {};
+        var pend = pendingAvatars[myKey];
+
         var name = h('input', { type: 'text', placeholder: 'display name' });
-        name.value = rec.displayName || '';
+        name.value = edit.displayName !== undefined
+          ? edit.displayName : (rec.displayName || '');
         var desc = h('textarea', { class: 'pat', spellcheck: 'false',
                                    placeholder: 'description shown on the feed page' });
-        desc.value = rec.description || '';
+        desc.value = edit.description !== undefined
+          ? edit.description : (rec.description || '');
+        function stash() {
+          recordEdits[myKey] = { displayName: name.value, description: desc.value };
+        }
+        name.addEventListener('input', stash);
+        desc.addEventListener('input', stash);
 
         var img = h('img', { class: 'avatar', alt: 'current avatar' });
-        img.setAttribute('src', base + 'feed/' + encodeURIComponent(key) + '/avatar');
+        // A pending image must keep showing, or the preview and what Publish
+        // would actually send disagree — which is worse than no preview.
+        img.setAttribute('src', pend
+          ? pend.base64
+          : base + 'feed/' + encodeURIComponent(myKey) + '/avatar');
         var file = h('input', { type: 'file', accept: 'image/png,image/jpeg' });
-        var fileMsg = h('div', { class: 'small muted' });
+        var fileMsg = h('div', { class: 'small muted', text: pend ? pend.note : '' });
         file.addEventListener('change', function () {
           var f = file.files && file.files[0];
-          if (!f) { pendingAvatar = null; fileMsg.textContent = ''; return; }
+          if (!f) { delete pendingAvatars[myKey]; fileMsg.textContent = ''; return; }
           var reader = new FileReader();
           reader.onload = function () {
-            pendingAvatar = { base64: String(reader.result), name: f.name };
-            img.setAttribute('src', String(reader.result));
-            fileMsg.className = 'small muted';
-            fileMsg.textContent = f.name + ' — ' + Math.round(f.size / 1024) +
+            var note = f.name + ' — ' + Math.round(f.size / 1024) +
               ' KB, not published yet' +
               (f.size > 1000000 ? ' — OVER the 1 MB the lexicon allows' : '');
+            pendingAvatars[myKey] = { base64: String(reader.result), name: f.name, note: note };
+            img.setAttribute('src', String(reader.result));
+            fileMsg.className = 'small muted';
+            fileMsg.textContent = note;
           };
           reader.readAsDataURL(f);
         });
 
         var creds = credsRow();
-        var btn = h('button', { class: 'primary', text: 'Publish to Bluesky' });
-        var out = h('div', { class: 'msg' });
+        var btn = h('button', { class: 'outgoing', text: 'Publish to Bluesky' });
+        var out = h('div', { class: 'msg', role: 'status' });
         btn.disabled = !writable;
         btn.addEventListener('click', function () {
           var payload = { handle: creds.handle.value, password: creds.pass.value };
           if (name.value !== (rec.displayName || '')) payload.displayName = name.value;
           if (desc.value !== (rec.description || '')) payload.description = desc.value;
-          if (pendingAvatar) payload.avatarBase64 = pendingAvatar.base64;
+          var avatar = pendingAvatars[myKey];
+          if (avatar) payload.avatarBase64 = avatar.base64;
           if (payload.displayName === undefined && payload.description === undefined &&
               !payload.avatarBase64) {
             out.className = 'msg warn'; out.textContent = 'Nothing changed here yet.';
@@ -972,7 +1644,7 @@ export const ADMIN_PAGE = `<!doctype html>
           }
           btn.disabled = true;
           out.className = 'msg'; out.textContent = 'Publishing…';
-          call('feed/' + encodeURIComponent(key) + '/record', { body: payload })
+          call('feed/' + encodeURIComponent(myKey) + '/record', { body: payload })
             .then(function (r) {
               return r.json().then(function (b) { return { status: r.status, body: b }; });
             }).then(function (res) {
@@ -982,10 +1654,13 @@ export const ADMIN_PAGE = `<!doctype html>
               if (res.status !== 200) {
                 out.className = 'msg bad'; out.textContent = res.body.error; return;
               }
-              records[key] = { uri: res.body.uri, cid: res.body.cid,
+              records[myKey] = { uri: res.body.uri, cid: res.body.cid,
                 displayName: name.value, description: desc.value,
                 avatarCid: rec.avatarCid };
-              pendingAvatar = null;
+              // Published, so these are no longer pending. Clearing them is what
+              // stops the next redraw from restoring an edit that already landed.
+              delete pendingAvatars[myKey];
+              delete recordEdits[myKey];
               out.className = 'msg ok';
               out.textContent = 'Published: ' + res.body.changed.join(', ') +
                 '. Bluesky may take a minute to show it.';
@@ -1031,7 +1706,7 @@ export const ADMIN_PAGE = `<!doctype html>
       var sensitive = false;
       var cs = checkbox('Case sensitive', false, function (on) { sensitive = on; });
       var btn = h('button', { text: 'Count matches' });
-      var out = h('div', { class: 'msg' });
+      var out = h('div', { class: 'msg', role: 'status' });
       var body = h('div', {}, []);
 
       function run() {
@@ -1117,7 +1792,7 @@ export const ADMIN_PAGE = `<!doctype html>
       var input = h('input', { type: 'text',
         placeholder: 'https://bsky.app/profile/…/post/… — or an at:// URI' });
       var btn = h('button', { class: 'primary', text: 'Explain' });
-      var out = h('div', { class: 'msg' });
+      var out = h('div', { class: 'msg', role: 'status' });
       var body = h('div', {}, []);
 
       function ask() {
@@ -1308,8 +1983,8 @@ export const ADMIN_PAGE = `<!doctype html>
         retention.value = '72';
 
         var creds = credsRow();
-        var btn = h('button', { class: 'primary', text: 'Publish and add' });
-        var out = h('div', { class: 'msg' });
+        var btn = h('button', { class: 'outgoing', text: 'Publish and add' });
+        var out = h('div', { class: 'msg', role: 'status' });
         btn.disabled = !writable;
 
         btn.addEventListener('click', function () {
@@ -1395,6 +2070,11 @@ export const ADMIN_PAGE = `<!doctype html>
       results.innerHTML = '';
       say('');
       redraw();
+      // The record card lives on its own tab now, so it is rebuilt here rather
+      // than by redraw(). Its unpublished state is keyed by rkey and held
+      // outside the DOM, so this cannot lose an edit.
+      recordHost.innerHTML = '';
+      recordHost.appendChild(recordCard());
       showDirty();
       redrawWhy();
     }
@@ -1409,8 +2089,9 @@ export const ADMIN_PAGE = `<!doctype html>
     });
 
     // Delegated, so every field added later is covered without wiring each one.
-    root.addEventListener('input', showDirty);
-    root.addEventListener('change', showDirty);
+    // Only the filters panel: nothing on the other tabs feeds the draft.
+    hosts.filters.addEventListener('input', showDirty);
+    hosts.filters.addEventListener('change', showDirty);
 
     function load() {
       busy(true); say('Loading…');
@@ -1430,7 +2111,12 @@ export const ADMIN_PAGE = `<!doctype html>
             text: full.feeds[k].displayName || k }));
         });
         selectFeed(feedSel.value || Object.keys(full.feeds || {})[0]);
-        say('Loaded, digest ' + digest + (writable ? '' : ' — this box is read-only'),
+        // Silence on success. This used to report the digest it had loaded,
+        // which was fine in a message area halfway down the page and is not in
+        // a bar fixed to the bottom of the window: it never cleared, so it cost
+        // a permanent row of a phone screen to say something the Status tab
+        // already shows. A read-only box still says so — that one is news.
+        say(writable ? '' : 'Loaded — this box is READ-ONLY, so Save is off.',
             writable ? '' : 'warn');
       }).catch(function (e) { busy(false); say('Network error: ' + e.message, 'bad'); });
     }
@@ -1454,7 +2140,11 @@ export const ADMIN_PAGE = `<!doctype html>
     });
 
     btnMeasure.addEventListener('click', function () {
-      busy(true); results.innerHTML = '';
+      // The bar is reachable from every tab, but the table it produces is on
+      // this one. Rendering it where nobody is looking would be worse than the
+      // scroll it replaced.
+      showTab('filters');
+      busy(true); btnMeasure.textContent = 'Measuring…'; results.innerHTML = '';
       say('Measuring against stored posts — the first run for a feed fetches them ' +
           'from the AppView and can take a while…');
       call('lab/measure', { body: { feed: key, filters: assembled() } }).then(function (r) {
@@ -1466,10 +2156,13 @@ export const ADMIN_PAGE = `<!doctype html>
       }).catch(function (e) { busy(false); say('Network error: ' + e.message, 'bad'); });
     });
 
-    btnSave.addEventListener('click', function () {
-      if (!confirm('Save ' + key + '? It goes live within ~10 seconds, and ' +
-                   'auto-purge will replay it over stored posts within 5 minutes.')) return;
-      busy(true); say('Saving…');
+    // Named, so Cmd+S can reach it without synthesising a click.
+    function saveNow() {
+      // No confirm(). What it would ask is already on screen, itemised, in the
+      // Unsaved changes card — and unlike the dialog it names what is actually
+      // about to change. The write is backed up, digest-guarded and validated
+      // before it lands; the auto-purge that follows has its own safety cap.
+      busy(true); btnSave.textContent = 'Saving…'; say('Saving…');
       call('filters', { method: 'PUT', body: { filters: assembled(), expectedDigest: digest } })
         .then(function (r) {
           return r.json().then(function (b) { return { status: r.status, body: b }; });
@@ -1482,7 +2175,8 @@ export const ADMIN_PAGE = `<!doctype html>
           showDirty();
           say('Saved. New digest ' + digest + '\\n' + res.body.note, 'ok');
         }).catch(function (e) { busy(false); say('Network error: ' + e.message, 'bad'); });
-    });
+    }
+    btnSave.addEventListener('click', saveNow);
 
     function renderLab(r) {
       results.innerHTML = '';
@@ -1532,8 +2226,38 @@ export const ADMIN_PAGE = `<!doctype html>
       }
     }
 
+    // Cmd/Ctrl+S. This is a config editor; the hand does it anyway, and without
+    // this the browser answers by offering to save the HTML.
+    if (document.addEventListener) {
+      document.addEventListener('keydown', function (e) {
+        if (e.key !== 's' || !(e.metaKey || e.ctrlKey)) return;
+        if (e.preventDefault) e.preventDefault();
+        if (!btnSave.disabled && isDirty()) saveNow();
+      });
+    }
+    // Closing the tab is the one exit that was silent. Reload and switching
+    // feeds both ask; this did not, and the draft is the only copy.
+    if (typeof window !== 'undefined' && window.addEventListener) {
+      window.addEventListener('beforeunload', function (e) {
+        if (!isDirty()) return;
+        e.preventDefault();
+        e.returnValue = '';
+        return '';
+      });
+    }
+
     load();
-    return { isDirty: isDirty };
+    return {
+      isDirty: isDirty,
+      // Used by the feed table on the Status tab. Switching still asks before
+      // throwing a draft away — that is destructive and leaves no record.
+      select: function (k) {
+        if (k === key) return;
+        if (isDirty() && !confirm('Discard unsaved changes to ' + key + '?')) return;
+        feedSel.value = k;
+        selectFeed(k);
+      }
+    };
   }
 
 
@@ -1640,7 +2364,7 @@ export const ADMIN_PAGE = `<!doctype html>
   // the FIRST factor this way would be an unprotected setup page.
   function renderTotp() {
     var box = h('div', { class: 'card pad' }, []);
-    var out = h('div', { class: 'msg' });
+    var out = h('div', { class: 'msg', role: 'status' });
     var body = h('div', {}, []);
 
     function refresh() {
@@ -1834,8 +2558,14 @@ export const ADMIN_PAGE = `<!doctype html>
   // for live ones. That label updates its own text node and nothing else — no
   // rebuild, no lost focus, no lost state.
   var statusPane = null, editorPane = null, editor = null;
+  var chromeEl = null, navEl = null, barEl = null, securityPane = null;
+  var hosts = null;
   var loadedAt = 0;
   var stampEl = null;
+  // Which tab is open, held out here so a Refresh — which rebuilds the status
+  // and security panels — cannot drop the reader back on the first one.
+  var activeTab = 'filters';
+  var tabButtons = {}, tabPanels = {};
   // Answers to the two on-demand checks, and any half-finished 2FA enrolment.
   // Held out here because the status pane is rebuilt whenever it reloads, and
   // an answer that vanished mid-read would be worse than no answer.
@@ -1851,25 +2581,109 @@ export const ADMIN_PAGE = `<!doctype html>
   }
   setInterval(touchStamp, 10000);
 
+  // Five panels, one visible. The feed picker sits ABOVE them because three of
+  // the five answer for one feed at a time, and asking which feed you meant is
+  // not a per-tab question.
+  var TABS = [
+    ['filters', 'Filters'], ['lab', 'Lab'], ['record', 'Record'],
+    ['status', 'Status'], ['security', 'Security']
+  ];
+
+  function showTab(id) {
+    activeTab = id;
+    TABS.forEach(function (t) {
+      var on = t[0] === id;
+      if (tabButtons[t[0]]) {
+        tabButtons[t[0]].setAttribute('aria-selected', on ? 'true' : 'false');
+        // Only the selected tab is a tab stop; arrows move between them, which
+        // is what a tablist is supposed to do.
+        tabButtons[t[0]].setAttribute('tabindex', on ? '0' : '-1');
+      }
+      if (tabPanels[t[0]]) tabPanels[t[0]].className = on ? '' : 'hidden';
+    });
+    paintBar();
+  }
+
+  // Shown whenever the filters are the subject — either because that tab is
+  // open, or because there is unsaved work that must not be forgotten on the
+  // way to another tab.
+  function paintBar() {
+    if (!barEl) return;
+    var show = !!editor && (activeTab === 'filters' || editor.isDirty());
+    barEl.className = 'actions' + (show ? '' : ' hidden');
+    app.className = show ? 'hasbar' : '';
+    // The CSS reserve is a starting guess and the bar is not a fixed height: it
+    // wraps on a narrow screen and grows again when a message lands in it. A
+    // guess that comes up short does not look like a layout bug, it looks like
+    // the page is missing its last card — so measure the thing and reserve what
+    // it actually takes. Guarded because there is no layout in the test stub.
+    if (app.style && show && barEl.offsetHeight) {
+      app.style.paddingBottom = (barEl.offsetHeight + 16) + 'px';
+    } else if (app.style) {
+      app.style.paddingBottom = '';
+    }
+  }
+
   function panes() {
     if (statusPane) return;
     app.innerHTML = '';
-    statusPane = h('div', {}, []);
-    editorPane = h('div', {}, []);
-    app.appendChild(statusPane);
-    app.appendChild(editorPane);
+    chromeEl = h('div', {}, []);
+    var pickerHost = h('div', {}, []);
+    navEl = h('div', { class: 'tabs', role: 'tablist',
+                       'aria-label': 'Admin sections' }, []);
+    tabButtons = {}; tabPanels = {};
+    app.appendChild(chromeEl);
+    app.appendChild(pickerHost);
+    app.appendChild(navEl);
+
+    TABS.forEach(function (t, i) {
+      var panel = h('div', { role: 'tabpanel', id: 'panel-' + t[0],
+                             'aria-label': t[1] }, []);
+      var btn = h('button', { role: 'tab', id: 'tab-' + t[0],
+                              'aria-controls': 'panel-' + t[0], text: t[1] });
+      btn.addEventListener('click', function () { showTab(t[0]); });
+      btn.addEventListener('keydown', function (e) {
+        var d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+        if (!d) return;
+        if (e.preventDefault) e.preventDefault();
+        var next = TABS[(i + d + TABS.length) % TABS.length][0];
+        showTab(next);
+        if (tabButtons[next].focus) tabButtons[next].focus();
+      });
+      tabButtons[t[0]] = btn;
+      tabPanels[t[0]] = panel;
+      navEl.appendChild(btn);
+      app.appendChild(panel);
+    });
+
+    statusPane = tabPanels.status;
+    securityPane = tabPanels.security;
+    editorPane = tabPanels.filters;
+    barEl = h('div', { class: 'actions hidden' }, []);
+    app.appendChild(barEl);
+    hosts = { picker: pickerHost, filters: tabPanels.filters, lab: tabPanels.lab,
+              record: tabPanels.record, actions: barEl };
+    showTab(activeTab);
   }
 
   function load() {
     api('status').then(function (r) {
-      if (r.status === 401) { renderLogin(); return; }
+      // Handled already: call() routes every 401 through onUnauthorized, which
+      // knows whether there is unsaved work to protect. Rendering the login form
+      // from here as well is what used to throw an edit away on a Refresh.
+      if (r.status === 401) return;
       if (!r.ok) throw new Error('status ' + r.status);
       return r.json().then(function (b) {
         panes();
         loadedAt = Date.now();
+        renderChrome(b.status, chromeEl);
         renderStatus(b.status, statusPane);
+        securityPane.innerHTML = '';
+        securityPane.appendChild(h('h2', { text: 'Security' }));
+        securityPane.appendChild(renderTotp());
         // Built once. Its own Reload button is how it refetches.
-        if (!editor) editor = renderConfigEditor(b.status, editorPane);
+        if (!editor) editor = renderConfigEditor(b.status, hosts);
+        paintBar();
         touchStamp();
       });
     }).catch(function (e) {
