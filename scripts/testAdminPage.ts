@@ -139,19 +139,32 @@ const run = async () => {
   const resolved: string[] = []
   const probes: any[] = []
   let statusFetches = 0
+  const requested: string[] = []
   const fetchStub = (url: string, init?: any) => {
     const method = init?.method ?? (init?.body ? 'POST' : 'GET')
-    let body: any = { ok: false }
-    if (url.endsWith('/api/status')) { statusFetches++; body = STATUS }
-    else if (url.endsWith('/filters') && method === 'GET') body = JSON.parse(JSON.stringify(FILTERS))
-    else if (url.endsWith('/lab/probe')) {
+    requested.push(method + ' ' + url)
+    let body: any = null
+    // Exact paths. The first version matched with endsWith, so a call to
+    // /admin/api/lab/measure — which does not exist — was answered as if it
+    // were /admin/lab/measure, and the real 404 only ever showed up in a
+    // browser.
+    if (url === '/admin/api/status') { statusFetches++; body = STATUS }
+    else if (url === '/admin/filters' && method === 'GET') body = JSON.parse(JSON.stringify(FILTERS))
+    else if (url === '/admin/lab/measure') {
+      body = { ok: true, result: { feed: 'coffee', stored: 100, unretrievable: 0,
+        keptNow: 98, keptAfter: 97, removed: 1, removedPct: 1,
+        wouldExceedAutoPurgeCap: false, cachedAt: '2026-08-04T20:00:00.000Z',
+        note: 'measured', samples: [{ uri: 'at://1', handle: 'dee', text: 'sponsored',
+          indexedAt: '2026-08-04T19:00:00.000Z', reason: 'excluded by /sponsored/' }] } }
+    }
+    else if (url === '/admin/lab/probe') {
       probes.push(JSON.parse(init.body))
       body = { ok: true, result: { feed: 'coffee', stored: 100, hits: 2, hitsPct: 2,
         wouldExceedAutoPurgeCap: false, cachedAt: '2026-08-04T20:00:00.000Z',
         note: 'Counted over the posts this feed already holds.',
         samples: [{ uri: 'at://1', handle: 'ann', text: 'fresh coffee', matched: 'coffee' }] } }
     }
-    else if (url.endsWith('/whynot')) {
+    else if (url === '/admin/whynot') {
       body = { ok: true, result: {
         uri: 'at://did:plc:a/app.bsky.feed.post/1', did: 'did:plc:a', handle: 'ann.example',
         createdAt: '2026-08-04T10:00:00.000Z', embed: 'none', isReply: false,
@@ -165,19 +178,27 @@ const run = async () => {
             includeTarget: null, mutedByList: false, disagrees: false },
         ] } }
     }
-    else if (/\/feed\/[^/]+\/record$/.test(url)) {
+    else if (/^\/admin\/feed\/[^/]+\/record$/.test(url)) {
       body = { ok: true, record: { uri: 'at://did:plc:p/app.bsky.feed.generator/coffee',
         cid: 'bafy', displayName: 'Coffee, published', description: 'the real one',
         avatarCid: 'bafcid', did: 'did:plc:s', createdAt: '2026-01-01T00:00:00Z' } }
     }
-    else if (url.endsWith('/resolve/post')) {
+    else if (url === '/admin/resolve/post') {
       resolved.push(JSON.parse(init.body).input)
       body = { ok: true, post: { uri: 'at://did:plc:mc/app.bsky.feed.post/3msc',
         did: 'did:plc:mc', handle: 'mcwyrm.bsky.social', text: 'a pinned post', exists: true } }
     }
-    else if (url.endsWith('/filters') && method === 'PUT') {
+    else if (url === '/admin/filters' && method === 'PUT') {
       puts.push(JSON.parse(init.body))
       body = { ok: true, digest: 'newdigest123', note: 'saved' }
+    }
+    if (body === null) {
+      // What express really does with an unmatched route: HTML, not JSON. The
+      // browser then fails in JSON.parse, which is how this surfaced.
+      return Promise.resolve({
+        status: 404, ok: false,
+        json: () => Promise.reject(new SyntaxError('not JSON')),
+      })
     }
     return Promise.resolve({ status: 200, ok: true, json: () => Promise.resolve(body) })
   }
@@ -375,6 +396,18 @@ const run = async () => {
     JSON.stringify(sent.feeds.coffee) === JSON.stringify(FILTERS.filters.feeds.coffee))
   check('...preserving keys the editor does not model', sent._readme !== undefined)
   check('...and the digest it loaded', puts[0]?.expectedDigest === 'abc123abc123')
+
+  console.log('\n── measuring an edit')
+  const measure = walk(app).find((e) => e.textContent === 'Measure this edit')!
+  measure.handlers['click']()
+  await settle()
+  check('the request goes to the route that exists',
+    requested.some((r) => r === 'POST /admin/lab/measure'),
+    requested.filter((r) => r.indexOf('measure') >= 0).join(' '))
+  const measured = textOf(app)
+  check('...and the result is shown',
+    measured.includes('posts would be removed') && measured.includes('would remain'))
+  check('...naming who would go', measured.includes('@dee'))
 
   console.log('\n── a status refresh must not disturb the editor')
   const beforePicker = find(app, 'select')[0]

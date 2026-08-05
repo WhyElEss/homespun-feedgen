@@ -1326,7 +1326,7 @@ export const ADMIN_PAGE = `<!doctype html>
       busy(true); results.innerHTML = '';
       say('Measuring against stored posts — the first run for a feed fetches them ' +
           'from the AppView and can take a while…');
-      api('lab/measure', { feed: key, filters: assembled() }).then(function (r) {
+      call('lab/measure', { body: { feed: key, filters: assembled() } }).then(function (r) {
         return r.json().then(function (b) { return { status: r.status, body: b }; });
       }).then(function (res) {
         busy(false);
