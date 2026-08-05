@@ -429,8 +429,20 @@ const run = async () => {
   // lets the whole page be dragged sideways until a pinch resets it.
   // iOS zooms the page in when focus enters a control under 16px and never
   // zooms out again — the single cause of "opens at ~105% and drags sideways".
-  check('form controls are 16px on a phone, so iOS will not zoom in',
-    css.includes('input, select, textarea { font-size: 16px; }'))
+  // iOS zooms the page in when focus enters a control under 16px and does NOT
+  // zoom back out on blur. `font: inherit` on a 15px page is exactly that, and
+  // a 16px rule in a media query loses the cascade to input[type=...] — which
+  // is how the password and 2FA fields stayed 15px while everything else was
+  // "fixed". Assert the outcome, not the intention: every typable control
+  // declares 16px itself, and none of them inherits its size.
+  const controlRules = css.match(/[^{}]*(?:input|select|textarea)[^{}]*\{[^}]*\}/g) || []
+  const typable = controlRules.filter((r) => !r.includes('type=file'))
+  check('every typable control declares its own size', typable.length >= 4, `${typable.length} rules`)
+  check('...and all of them are 16px',
+    typable.every((r) => !/font(-size)?\s*:/.test(r) || r.includes('16px')),
+    typable.filter((r) => /font(-size)?\s*:/.test(r) && !r.includes('16px')).join(' | ').slice(0, 90))
+  check('no control takes its size from `font: inherit`',
+    !/(?:input|select|textarea)[^{}]*\{[^}]*font:\s*inherit/.test(css))
   // iOS ignores overflow-x: hidden on html/body — it has to be on a wrapper,
   // which is what <main> is. An earlier fix put it only on the root and did
   // nothing at all.
@@ -446,6 +458,12 @@ const run = async () => {
       css.includes('padding: 1rem var(--gutter) 3rem'))
   check('nothing may exceed its container',
     css.includes('input, select, textarea, img, pre { max-width: 100%; }'))
+
+  // The page is one template literal, so a backtick anywhere inside it — in a
+  // comment, in a code span — ends the string early and breaks the build. It
+  // has now happened once with backslashes and once with backticks.
+  console.log('\n── the page source stays inside its template literal')
+  check('no stray backticks in the rendered page', !ADMIN_PAGE.slice(1, -1).includes('`'))
 
   console.log('\n── nothing invisible leaks into the UI')
   const CTRL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/

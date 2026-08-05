@@ -90,8 +90,18 @@ export const ADMIN_PAGE = `<!doctype html>
   }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button:disabled { opacity: .55; cursor: default; }
+  /* 16px on every control, always, and NEVER via 'font: inherit'.
+     iOS Safari zooms the whole page in when focus enters a control under 16px
+     and does not zoom back out when focus leaves — a documented WebKit
+     behaviour, not something a page can undo. Body text here is 15px, so
+     'font: inherit' was handing these fields exactly the size that triggers it.
+     An earlier attempt set 16px from inside a media query, which lost the
+     cascade: input[type=text] is specificity 0-1-1 and input is 0-0-1, and
+     a media query adds none. The two fields that mattered most — password and
+     the 2FA code — stayed 15px while everything else was fixed. */
   input[type=password], input[type=text] {
-    font: inherit; width: 100%; padding: .55rem .7rem; border-radius: 7px;
+    font-family: inherit; font-size: 16px;
+    width: 100%; padding: .55rem .7rem; border-radius: 7px;
     border: 1px solid var(--line); background: var(--bg); color: var(--fg);
   }
   /* Present for password managers, not for the operator: it carries no meaning
@@ -106,12 +116,12 @@ export const ADMIN_PAGE = `<!doctype html>
   .small { font-size: .82rem; }
   footer { margin-top: 2.5rem; color: var(--muted); font-size: .8rem; }
   textarea {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .82rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 16px;
     width: 100%; min-height: 24rem; padding: .7rem; border-radius: 8px; tab-size: 2;
     border: 1px solid var(--line); background: var(--bg); color: var(--fg);
     line-height: 1.45; resize: vertical;
   }
-  select { font: inherit; padding: .4rem .5rem; border-radius: 7px;
+  select { font-family: inherit; font-size: 16px; padding: .4rem .5rem; border-radius: 7px;
            border: 1px solid var(--line); background: var(--card); color: var(--fg); }
   .toolbar { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap;
              margin-top: .7rem; }
@@ -124,7 +134,7 @@ export const ADMIN_PAGE = `<!doctype html>
                letter-spacing: .05em; }
   textarea.pat { min-height: 5.5rem; }
   input[type=text], input[type=number] {
-    font: inherit; padding: .45rem .6rem; border-radius: 7px;
+    font-family: inherit; font-size: 16px; padding: .45rem .6rem; border-radius: 7px;
     border: 1px solid var(--line); background: var(--bg); color: var(--fg);
   }
   input[type=text] { width: 100%; }
@@ -182,16 +192,6 @@ export const ADMIN_PAGE = `<!doctype html>
 
   @media (max-width: 40rem) {
     :root { --gutter: .8rem; }
-    /* THE reason this page opened looking zoomed in and could be dragged
-       sideways: iOS Safari zooms the whole page when focus lands in a form
-       control whose font is smaller than 16px, and never zooms back out. Body
-       text here is 15px and controls inherit it — 16/15 is 1.067, which is
-       exactly the "about 105%" that was reported. The login form focuses its
-       first field on render, so it happened before anything was even touched.
-       16px on every control is the whole fix; nothing else about it is a
-       layout problem. */
-    input, select, textarea { font-size: 16px; }
-    textarea.pat { font-size: 15px; }
     body { padding: 1rem var(--gutter) 3rem; }
     /* Stacked, so a long value gets the full width instead of fighting its
        label for it across a flex row. */
@@ -221,7 +221,9 @@ export const ADMIN_PAGE = `<!doctype html>
   .grow { flex: 1; min-width: 12rem; }
   .flabel { display: block; font-size: .78rem; color: var(--muted);
             text-transform: uppercase; letter-spacing: .05em; margin-top: .3rem; }
-  input[type=file] { font: inherit; font-size: .85rem; }
+  /* Cannot be typed into, so it cannot trigger the zoom — but spelled out
+     rather than inherited, so nobody has to work that out again. */
+  input[type=file] { font-family: inherit; font-size: .85rem; }
 </style>
 </head>
 <body>
