@@ -67,7 +67,12 @@ const mountAdminUi = (
       whyNot: (input) => explainPost(ctx.db, input),
       probe: (feed, p: any) =>
         probePattern(ctx.db, feed, { pattern: p.pattern, flags: p.flags, target: p.target }),
-      identity: { publisherDid: ctx.cfg.publisherDid, serviceDid: ctx.cfg.serviceDid },
+      identity: {
+        publisherDid: ctx.cfg.publisherDid,
+        serviceDid: ctx.cfg.serviceDid,
+        hostname: ctx.cfg.hostname,
+        subscriptionEndpoint: ctx.cfg.subscriptionEndpoint,
+      },
     }),
   )
   console.log(

@@ -157,6 +157,18 @@ const run = async () => {
         note: 'measured', samples: [{ uri: 'at://1', handle: 'dee', text: 'sponsored',
           indexedAt: '2026-08-04T19:00:00.000Z', reason: 'excluded by /sponsored/' }] } }
     }
+    else if (url === '/admin/jetstream/probe') {
+      body = { ok: true, readings: [
+        { endpoint: 'wss://jet1.example', medianAgeSec: 3, samples: 20, error: null },
+        { endpoint: 'wss://jet2.example', medianAgeSec: 6800, samples: 20, error: null },
+        { endpoint: 'wss://jet3.example', medianAgeSec: null, samples: 0, error: 'timed out' },
+      ] }
+    }
+    else if (url === '/admin/identity') {
+      body = { ok: true, identity: { serviceDid: 'did:plc:s', handle: 'me.example',
+        feedEndpoint: 'https://old.example.com', expectedEndpoint: 'https://feed.example.com',
+        matches: false, pds: 'https://pds.example', note: 'Bluesky calls a DIFFERENT hostname.' } }
+    }
     else if (url === '/admin/lab/probe') {
       probes.push(JSON.parse(init.body))
       body = { ok: true, result: { feed: 'coffee', stored: 100, hits: 2, hitsPct: 2,
@@ -273,6 +285,44 @@ const run = async () => {
     walk(app).some((e) => e.textContent === 'Publish to Bluesky'))
   check('the internal label says what it is for',
     all.includes('Only this page and the service log ever show it'))
+
+  console.log('\n── the Jetstream instances panel')
+  check('the configured endpoint is listed before any measurement',
+    all.includes('jet1.example') && all.includes('in use'))
+  const measureLag = walk(app).find((e) => e.textContent === 'Measure lag')!
+  measureLag.handlers['click']()
+  await settle()
+  const probed2 = textOf(app)
+  check('...every instance appears after measuring',
+    probed2.includes('jet2.example') && probed2.includes('jet3.example'))
+  check('...a badly lagging one is reported in hours', probed2.includes('2h'))
+  check('...an unreachable one shows its error', probed2.includes('timed out'))
+  // The results must survive the 30s refresh that redraws the status pane.
+  await firePoll()
+  check('...and the readings survive a status refresh',
+    textOf(app).includes('jet2.example'))
+
+  const useThis = walk(app).find((e) => e.textContent === 'use this')!
+  check('a non-active instance offers a switch', !!useThis)
+  useThis.handlers['click']()
+  await settle()
+  const chosen = textOf(app)
+  check('...which hands over the exact .env line',
+    chosen.includes('FEEDGEN_SUBSCRIPTION_ENDPOINT="wss://jet2.example"'))
+  check('...and the restart command', chosen.includes('docker compose up -d feedgen'))
+  check('...saying plainly that the page cannot do it itself',
+    chosen.includes('cannot restart itself'))
+
+  console.log('\n── the identity check')
+  const idBtn = walk(app).find((e) => e.textContent === 'Check identity')!
+  check('it is a button, not part of the refresh', !!idBtn)
+  check('...and asks nothing until pressed', !all.includes('This box expects'))
+  idBtn.handlers['click']()
+  await settle()
+  const ident = textOf(app)
+  check('...reporting what Bluesky calls', ident.includes('https://old.example.com'))
+  check('...against what this box expects', ident.includes('https://feed.example.com'))
+  check('...and flagging the mismatch', ident.includes('MISMATCH'))
 
   console.log('\n── the retention sweep is reported')
   check('the last sweep is shown', all.includes('Retention sweep'))

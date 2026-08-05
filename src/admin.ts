@@ -7,6 +7,7 @@ import { AdminAuth } from './adminAuth'
 import { StatusSnapshot, shortDigest } from './adminStatus'
 import { ADMIN_PAGE } from './adminPage'
 import { resolvePostRef } from './adminResolve'
+import { probeInstances } from './adminJetstream'
 import {
   login,
   getFeedRecord,
@@ -16,6 +17,7 @@ import {
   decodeImage,
   blobLink,
   RKEY_RE,
+  checkIdentity,
 } from './adminPds'
 
 // The admin surface: a config side channel, a status view, and the UI that
@@ -71,7 +73,12 @@ export type AdminRouterOptions = {
   probe?: (feed: string, probe: unknown) => Promise<unknown>
   // Whose repository the feed records live in, and which service they point at.
   // Without it the record-editing routes are not mounted at all.
-  identity?: { publisherDid: string; serviceDid: string }
+  identity?: {
+    publisherDid: string
+    serviceDid: string
+    hostname: string
+    subscriptionEndpoint: string
+  }
 }
 
 // Kept next to the config, so a restore of data/ carries the history with it.
@@ -147,7 +154,7 @@ export const createAdminRouter = (opts: AdminRouterOptions = {}): express.Router
   // These live on the PDS, not in filters.json, and every write here carries
   // its own credentials — nothing is stored. See src/adminPds.ts.
   if (opts.identity) {
-    const { publisherDid, serviceDid } = opts.identity
+    const { publisherDid, serviceDid, hostname, subscriptionEndpoint } = opts.identity
     // An avatar arrives base64 in the body, which does not fit the 1 MB limit
     // the rest of the router uses, so these routes bring their own parser.
     const bigJson = express.json({ limit: '4mb' })
@@ -168,6 +175,25 @@ export const createAdminRouter = (opts: AdminRouterOptions = {}): express.Router
       })
       return false
     }
+
+    // Both read-only, both on demand: the status snapshot deliberately makes no
+    // network calls, so a slow third party can never stall the page that is
+    // supposed to tell you the service is healthy.
+    router.get('/identity', guard, async (_req, res) => {
+      try {
+        res.json({ ok: true, identity: await checkIdentity(serviceDid, hostname) })
+      } catch (err: any) {
+        res.status(400).json({ ok: false, error: String(err?.message ?? err) })
+      }
+    })
+
+    router.post('/jetstream/probe', guard, async (_req, res) => {
+      try {
+        res.json({ ok: true, readings: await probeInstances(subscriptionEndpoint) })
+      } catch (err: any) {
+        res.status(400).json({ ok: false, error: String(err?.message ?? err) })
+      }
+    })
 
     router.get('/feed/:rkey/record', guard, async (req, res) => {
       try {

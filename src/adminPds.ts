@@ -306,3 +306,62 @@ export const decodeImage = (base64: string | undefined): Buffer | undefined => {
   sniffMime(bytes)
   return bytes
 }
+
+export type IdentityCheck = {
+  serviceDid: string
+  handle: string | null
+  feedEndpoint: string | null
+  expectedEndpoint: string
+  matches: boolean
+  pds: string | null
+  note: string
+}
+
+// Does the identity Bluesky resolves still agree with what this box thinks it
+// is? The two drift apart in exactly the situations that are hardest to spot:
+// a domain moved and the PLC document was never updated, or it was updated and
+// a standby's .env was not. Nothing here writes; it is a question, asked when
+// asked.
+export const checkIdentity = async (
+  serviceDid: string,
+  hostname: string,
+): Promise<IdentityCheck> => {
+  const expectedEndpoint = `https://${hostname}`
+  if (!serviceDid.startsWith('did:plc:')) {
+    return {
+      serviceDid,
+      handle: null,
+      feedEndpoint: null,
+      expectedEndpoint,
+      matches: false,
+      pds: null,
+      note:
+        'This is not a did:plc identity, so there is no PLC document to check. ' +
+        'A did:web identity carries the hostname inside the DID itself.',
+    }
+  }
+  const res = await fetch(`https://plc.directory/${encodeURIComponent(serviceDid)}`)
+  if (!res.ok) throw new Error(`plc.directory: HTTP ${res.status}`)
+  const doc = (await res.json()) as any
+  const services: any[] = doc.service ?? []
+  const fg = services.find((x) => String(x.id).endsWith('bsky_fg'))
+  const pds = services.find((x) => String(x.id).endsWith('atproto_pds'))
+  const feedEndpoint = fg?.serviceEndpoint ?? null
+
+  return {
+    serviceDid,
+    handle: (doc.alsoKnownAs ?? [])[0]?.replace(/^at:\/\//, '') ?? null,
+    feedEndpoint,
+    expectedEndpoint,
+    matches: feedEndpoint === expectedEndpoint,
+    pds: pds?.serviceEndpoint ?? null,
+    note: !feedEndpoint
+      ? 'The DID document has no #bsky_fg entry — run setupServiceDid, or no ' +
+        'feed of yours can be reached at all.'
+      : feedEndpoint === expectedEndpoint
+        ? 'Bluesky calls the hostname this box is configured with.'
+        : 'Bluesky calls a DIFFERENT hostname than this box is configured with. ' +
+          'That is normal on a standby, and a bug anywhere else — see ' +
+          'DOMAIN-MOVE.md.',
+  }
+}

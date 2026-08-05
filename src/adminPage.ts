@@ -131,6 +131,9 @@ export const ADMIN_PAGE = `<!doctype html>
   .cbox input { margin: 0; }
   .row.wrapx { flex-wrap: wrap; margin-top: 0; }
   .warn-text { color: var(--warn); }
+  pre.cmd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem;
+            background: var(--bg); border: 1px solid var(--line); border-radius: 7px;
+            padding: .5rem .6rem; margin: .4rem 0 0; overflow-x: auto; }
   button.linkish { border: none; background: none; color: var(--accent);
                    padding: .2rem 0; font-size: .85rem; }
   img.avatar { width: 72px; height: 72px; border-radius: 12px; object-fit: cover;
@@ -271,7 +274,8 @@ export const ADMIN_PAGE = `<!doctype html>
         kv('Publisher DID', s.service.publisherDid, 'mono small'),
         kv('Node', s.box.node, 'mono small'),
         kv('PID', s.box.pid)
-      ])])
+      ])]),
+      renderIdentity()
     ]));
 
     // ── ingest
@@ -319,6 +323,7 @@ export const ADMIN_PAGE = `<!doctype html>
          g.failures ? 'pill bad' : '')
     ])]));
     root.appendChild(h('div', { class: 'grid' }, cursorCards));
+    root.appendChild(renderInstances(s));
 
     // ── feeds
     root.appendChild(h('h2', { text: 'Feeds' }));
@@ -1405,6 +1410,141 @@ export const ADMIN_PAGE = `<!doctype html>
     return { isDirty: isDirty };
   }
 
+
+  // Every public Jetstream instance, with its measured lag and the exact way to
+  // move to one. The lag matters because an instance can fall HOURS behind while
+  // still stamping fresh event times — the cursor looks perfect and the feed
+  // quietly serves stale posts. That has happened here once already.
+  function renderInstances(s) {
+    var box = h('div', {}, []);
+    var active = s.service.subscriptionEndpoint;
+
+    var btn = h('button', { text: jetstream.busy ? 'Measuring…' : 'Measure lag' });
+    btn.disabled = jetstream.busy;
+    btn.addEventListener('click', function () {
+      jetstream.busy = true; jetstream.chosen = null;
+      btn.disabled = true; btn.textContent = 'Measuring…';
+      call('jetstream/probe', { body: {} }).then(function (r) {
+        return r.json().then(function (b) { return { status: r.status, body: b }; });
+      }).then(function (res) {
+        jetstream.busy = false;
+        jetstream.readings = res.status === 200 ? res.body.readings : null;
+        if (res.status !== 200) jetstream.error = res.body.error;
+        load();
+      }).catch(function (e) {
+        jetstream.busy = false; jetstream.error = e.message; load();
+      });
+    });
+
+    var rows = [];
+    var list = jetstream.readings ||
+      [{ endpoint: active, medianAgeSec: null, samples: 0, error: null }];
+    list.forEach(function (r) {
+      var isActive = r.endpoint === active;
+      var cls = r.medianAgeSec == null ? 'idle'
+        : r.medianAgeSec > 600 ? 'bad' : r.medianAgeSec > 60 ? 'warn' : 'ok';
+      var lag = h('td', {}, []);
+      lag.appendChild(h('span', { class: 'pill ' + cls, text:
+        r.error ? r.error : r.medianAgeSec == null ? 'not measured' : ago(r.medianAgeSec) }));
+
+      var action = h('td', {}, []);
+      if (isActive) {
+        action.appendChild(h('span', { class: 'pill ok', text: 'in use' }));
+      } else if (!r.error) {
+        var use = h('button', { class: 'chip', text: 'use this' });
+        use.addEventListener('click', function () {
+          jetstream.chosen = r.endpoint;
+          load();
+        });
+        action.appendChild(use);
+      }
+
+      rows.push(h('tr', {}, [
+        h('td', { class: 'mono small', text: r.endpoint.replace(/^wss:\\/\\//, '') }),
+        lag,
+        h('td', { class: 'small muted', text: r.samples ? r.samples + ' posts' : '—' }),
+        action
+      ]));
+    });
+
+    box.appendChild(h('div', { class: 'card wrap' }, [
+      h('table', {}, [
+        h('thead', {}, [h('tr', {}, [
+          h('th', { text: 'Jetstream instance' }),
+          h('th', { text: 'Posts arriving this far behind' }),
+          h('th', { text: 'Sampled' }), h('th', { text: '' })])]),
+        h('tbody', {}, rows)])]));
+
+    var tools = h('div', { class: 'toolbar' }, [btn]);
+    if (jetstream.error) {
+      tools.appendChild(h('span', { class: 'small warn-text', text: jetstream.error }));
+    } else if (!jetstream.readings) {
+      tools.appendChild(h('span', { class: 'small muted', text:
+        'Measures the median age of posts arriving from each instance — the only ' +
+        'thing that reveals a lagging one, since its event times look fresh.' }));
+    }
+    box.appendChild(tools);
+
+    // Switching is two manual steps and this says so. The endpoint is read once
+    // at startup, .env is not mounted into the container, and a container does
+    // not restart itself — a button that claimed to switch would be lying.
+    if (jetstream.chosen) {
+      box.appendChild(h('div', { class: 'card pad' }, [
+        h('p', { class: 'small', text: 'To move ingest to ' +
+          jetstream.chosen.replace(/^wss:\\/\\//, '') + ', on this box:' }),
+        h('pre', { class: 'cmd', text:
+          'FEEDGEN_SUBSCRIPTION_ENDPOINT="' + jetstream.chosen + '"' }),
+        h('pre', { class: 'cmd', text: 'docker compose up -d feedgen' }),
+        h('p', { class: 'small muted', text:
+          'The first line replaces the existing one in .env. This page cannot do ' +
+          'either step: the endpoint is read once at startup, .env is not mounted ' +
+          'into the container, and the container cannot restart itself.' }),
+        h('p', { class: 'small muted', text:
+          'sub_state is keyed by the endpoint STRING, so the new one starts with ' +
+          'no cursor and ingest resumes live — you lose only the restart itself. ' +
+          'The old row stays behind, frozen, and shows up above as not in use.' })
+      ]));
+    }
+    return box;
+  }
+
+  // Does the identity Bluesky resolves still match this box? Read-only, and on
+  // a button rather than in the refresh, so a slow plc.directory can never
+  // stall the page.
+  function renderIdentity() {
+    var box = h('div', { class: 'card pad' }, []);
+    var btn = h('button', { text: identity.busy ? 'Checking…' : 'Check identity' });
+    btn.disabled = identity.busy;
+    btn.addEventListener('click', function () {
+      identity.busy = true; identity.error = null; btn.disabled = true;
+      call('identity').then(function (r) {
+        return r.json().then(function (b) { return { status: r.status, body: b }; });
+      }).then(function (res) {
+        identity.busy = false;
+        if (res.status === 200) identity.result = res.body.identity;
+        else identity.error = res.body.error;
+        load();
+      }).catch(function (e) { identity.busy = false; identity.error = e.message; load(); });
+    });
+
+    box.appendChild(h('div', { class: 'toolbar' }, [btn]));
+    if (identity.error) {
+      box.appendChild(h('p', { class: 'small warn-text', text: identity.error }));
+    }
+    var r = identity.result;
+    if (r) {
+      box.appendChild(h('dl', {}, [
+        kv('Handle', r.handle || '—'),
+        kv('Bluesky calls', r.feedEndpoint || 'nothing — no #bsky_fg entry', 'mono small'),
+        kv('This box expects', r.expectedEndpoint, 'mono small'),
+        kv('Agreement', r.matches ? 'match' : 'MISMATCH',
+           'pill ' + (r.matches ? 'ok' : 'bad'))
+      ]));
+      box.appendChild(h('p', { class: 'small muted', text: r.note }));
+    }
+    return box;
+  }
+
   // The page is two independent panes, and the refresh only ever touches the
   // first one. The first version re-rendered EVERYTHING every 30 seconds, which
   // rebuilt the editor underneath whoever was using it: the feed picker snapped
@@ -1412,6 +1552,11 @@ export const ADMIN_PAGE = `<!doctype html>
   // and unsaved edits vanished. A status poll must not be able to do that.
   var timer = null;
   var statusPane = null, editorPane = null, editor = null;
+  // Results of the two on-demand checks. Held out here because the status pane
+  // redraws every 30 seconds: kept inside it, an answer would vanish while you
+  // were reading it.
+  var jetstream = { readings: null, busy: false, chosen: null };
+  var identity = { result: null, busy: false, error: null };
 
   function schedule() { timer = setTimeout(tick, 30000); }
 
