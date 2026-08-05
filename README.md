@@ -298,6 +298,26 @@ yarn adminPassword        # prompts twice, prints the .env lines
 * failed logins are rate limited per client address and globally — the global limiter is what still holds when someone reaches the service directly and forges `CF-Connecting-IP`;
 * the page loads no external resource, so its Content-Security-Policy forbids everything but its own inline style and script, and `frame-ancestors 'none'` keeps the login form out of an iframe.
 
+#### Two factors, optionally
+
+Set `FEEDGEN_ADMIN_TOTP_SECRET` and the login also asks for a six-digit code from an authenticator app — ordinary TOTP (RFC 6238), so any app works. Off when the variable is absent.
+
+```bash
+yarn adminTotp            # prints the secret, an otpauth:// URI, and the .env line
+```
+
+There is no QR code: drawing one needs either a dependency or a few hundred lines of encoder, and every authenticator accepts a secret typed by hand — the same fallback you get under a QR anyway. The script prints the code your app should be showing at that moment, so a clock problem surfaces during setup rather than at the login screen.
+
+Three details that separate a working second factor from a decorative one, all covered by `yarn test:admintotp`:
+
+* the window is **one step either side** — ±30 s of clock skew, no more. A wide window is how TOTP quietly stops being a second factor;
+* **a code works once.** The step it came from is remembered, so a code read over your shoulder or left in a proxy log is refused for the rest of its window;
+* the code is checked **after** the password, never before, so a wrong password reveals nothing about it.
+
+**TOTP needs the server clock to be roughly right** — check `timedatectl` says the clock is synchronised before turning it on. **Locked out?** Delete `FEEDGEN_ADMIN_TOTP_SECRET` from `.env` and restart; the second factor is gone and the password alone works again. That escape hatch is why the secret lives in `.env` rather than in a database.
+
+`FEEDGEN_ADMIN_USER` sets the account name the form must match (default `admin`). It is one account, not a user list: a wrong name and a wrong password give the same answer, so it opens no way to enumerate users.
+
 `FEEDGEN_BOX_NAME` labels the box in the UI, and `FEEDGEN_ADMIN_MODE` (`readonly` by default, or `rw`) says whether this box is the one whose config may be edited — today that only sets the label, and write endpoints will require it when they exist.
 
 **If you run a standby, leave `FEEDGEN_ADMIN_UI` unset on it.** It runs the same image from the same tree and answers on its own hostname, so a `.env` copied from the primary is all it takes to publish a second login page — and, once writes exist, to let someone edit a config that the next sync will overwrite. `yarn test:adminauth` covers the refusals: the guard, the rate limiter, session expiry, cross-origin posts, and that the snapshot carries no secret.

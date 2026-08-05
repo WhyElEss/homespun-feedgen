@@ -13,6 +13,7 @@ import { watchFilters } from './filter'
 import { buildAlgos } from './algos'
 import { createAdminRouter, startAdminServer } from './admin'
 import { createAdminAuth, looksLikeHash } from './adminAuth'
+import { looksLikeSecret } from './adminTotp'
 import { collectStatus } from './adminStatus'
 import { measureCandidate, probePattern } from './adminLab'
 import { explainPost } from './adminWhyNot'
@@ -50,6 +51,20 @@ const mountAdminUi = (
     )
   }
 
+  const user = process.env.FEEDGEN_ADMIN_USER || 'admin'
+  // Optional second factor. A malformed secret is a startup error for the same
+  // reason a malformed password hash is: silently running with 2FA disabled
+  // when it was meant to be on is the failure nobody notices.
+  const totpSecret = process.env.FEEDGEN_ADMIN_TOTP_SECRET || undefined
+  if (totpSecret && !looksLikeSecret(totpSecret)) {
+    throw new Error(
+      'FEEDGEN_ADMIN_TOTP_SECRET is not a usable base32 secret (at least 16 ' +
+        'bytes once decoded). Run `yarn adminTotp` to make one. Refusing to ' +
+        'start rather than quietly serving the UI without the second factor ' +
+        'you asked for.',
+    )
+  }
+
   // Gates PUT /admin/filters, and defaults to readonly. A standby must stay
   // readonly: its config is replaced by the primary every 10 minutes, so an
   // edit there is not merely risky, it is a change that quietly disappears.
@@ -58,7 +73,7 @@ const mountAdminUi = (
   app.use(
     '/admin',
     createAdminRouter({
-      auth: createAdminAuth({ passwordHash }),
+      auth: createAdminAuth({ passwordHash, user, totpSecret }),
       page: true,
       writable,
       status: () => collectStatus(ctx.db, ctx.cfg, startedAt, writable),
@@ -78,7 +93,7 @@ const mountAdminUi = (
   console.log(
     `admin: UI mounted at /admin on the public app (${
       writable ? 'rw' : 'read-only'
-    }, password required)`,
+    }, user "${user}", ${totpSecret ? 'password + TOTP' : 'password only'})`,
   )
 }
 

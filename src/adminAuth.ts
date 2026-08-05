@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 import express from 'express'
+import { verifyTotp } from './adminTotp'
 
 // Password and session handling for the admin UI.
 //
@@ -118,6 +119,12 @@ export const verifyPassword = async (
 
 export type AuthOptions = {
   passwordHash: string
+  // The account name the login form must match. Real, not decorative — but
+  // still ONE account: a wrong name and a wrong password give the same answer,
+  // so it adds no way to enumerate users.
+  user?: string
+  // base32. When set, a second factor is required. Absent = off.
+  totpSecret?: string
   // Absolute lifetime of a session, and how long it may sit idle.
   sessionTtlMs?: number
   sessionIdleMs?: number
@@ -132,6 +139,7 @@ export type AuthOptions = {
 type Session = { created: number; lastSeen: number; ip: string }
 
 const DEFAULTS = {
+  user: 'admin',
   sessionTtlMs: 12 * 60 * 60 * 1000,
   sessionIdleMs: 60 * 60 * 1000,
   maxFailuresPerIp: 5,
@@ -186,11 +194,16 @@ export type AdminAuth = {
   routes: express.Router
   // Exposed for the tests and for the status page's "signed in since" line.
   sessionCount: () => number
+  // Whether the login form should ask for a code. Revealed unauthenticated,
+  // which costs nothing: one login attempt would tell you the same.
+  totpRequired: boolean
 }
 
 export const createAdminAuth = (opts: AuthOptions): AdminAuth => {
   const cfg = { ...DEFAULTS, ...opts }
   const sessions = new Map<string, Session>()
+  // The last TOTP step accepted. A code is good once — see verifyTotp.
+  let lastTotpStep: number | undefined
   const failuresByIp = new Map<string, { count: number; first: number }>()
   let globalFailures = { count: 0, first: 0 }
 
@@ -223,6 +236,15 @@ export const createAdminAuth = (opts: AuthOptions): AdminAuth => {
     console.warn(
       `admin: failed login from ${ip} (${perIp.count} in window, ${globalFailures.count} total)`,
     )
+  }
+
+  // Hashed before comparing so the comparison is constant time AND does not
+  // leak the expected length, which a raw timingSafeEqual on unequal buffers
+  // would (it throws) and a length check would (it returns early).
+  const sameUser = (given: unknown): boolean => {
+    const a = crypto.createHash('sha256').update(String(given ?? '')).digest()
+    const b = crypto.createHash('sha256').update(cfg.user).digest()
+    return crypto.timingSafeEqual(a, b)
   }
 
   const setCookie = (req: express.Request, res: express.Response, token: string) => {
@@ -285,10 +307,14 @@ export const createAdminAuth = (opts: AuthOptions): AdminAuth => {
       return
     }
 
-    const password = (req.body ?? {}).password
+    const body: any = req.body ?? {}
+    const password = body.password
     // Verify even when the field is missing or malformed, so a wrong shape and
-    // a wrong password cost the same time and reveal the same thing.
+    // a wrong password cost the same time and reveal the same thing. The user
+    // check is folded into the same verdict for the same reason: a wrong name
+    // and a wrong password are indistinguishable from outside.
     const ok =
+      sameUser(body.user) &&
       typeof password === 'string' &&
       password.length > 0 &&
       password.length <= 1024 &&
@@ -296,8 +322,31 @@ export const createAdminAuth = (opts: AuthOptions): AdminAuth => {
 
     if (!ok) {
       recordFailure(ip, now)
-      res.status(401).json({ ok: false, error: 'wrong password' })
+      res.status(401).json({ ok: false, error: 'wrong username or password' })
       return
+    }
+
+    // Only now, with the first factor proved, does the second one get asked
+    // about — a wrong password must never reveal anything about the code.
+    if (cfg.totpSecret) {
+      const verdict = verifyTotp(cfg.totpSecret, body.totp, { lastUsedStep: lastTotpStep })
+      if (!verdict.ok) {
+        recordFailure(ip, now)
+        if (verdict.replay) {
+          console.warn(`admin: TOTP code reused from ${ip} — refused`)
+        } else if (verdict.step !== null) {
+          console.warn(`admin: TOTP off by ${verdict.drift} step(s) from ${ip}`)
+        }
+        res.status(401).json({
+          ok: false,
+          error: verdict.replay
+            ? 'that code has already been used — wait for the next one'
+            : 'wrong or expired code',
+          needsTotp: true,
+        })
+        return
+      }
+      lastTotpStep = verdict.step ?? lastTotpStep
     }
 
     failuresByIp.delete(ip)
@@ -315,5 +364,10 @@ export const createAdminAuth = (opts: AuthOptions): AdminAuth => {
     res.json({ ok: true })
   })
 
-  return { guard, routes, sessionCount: () => sessions.size }
+  return {
+    guard,
+    routes,
+    sessionCount: () => sessions.size,
+    totpRequired: !!cfg.totpSecret,
+  }
 }

@@ -75,7 +75,7 @@ const mount = async (writable: boolean, db?: any) => {
   const login = await fetch(`${url}/api/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ password: PASSWORD }),
+    body: JSON.stringify({ user: 'admin', password: PASSWORD }),
   })
   const cookie = (login.headers.get('set-cookie') ?? '').split(';')[0]
   const call = async (p: string, init: { method?: string; body?: unknown } = {}) => {

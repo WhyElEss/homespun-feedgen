@@ -75,7 +75,8 @@ export const ADMIN_PAGE = `<!doctype html>
   }
   /* Present for password managers, not for the operator: it carries no meaning
      and cannot be changed, so it should not look like something to fill in. */
-  input.account { color: var(--muted); cursor: default; margin-bottom: .5rem; }
+  form.login input { margin-bottom: .5rem; }
+  .hidden { display: none; }
   form.login { max-width: 21rem; margin: 4rem auto; }
   form.login p { color: var(--muted); font-size: .85rem; margin: .2rem 0 1rem; }
   .row { display: flex; gap: .5rem; align-items: center; margin-top: .7rem; }
@@ -203,38 +204,61 @@ export const ADMIN_PAGE = `<!doctype html>
   function renderLogin(message) {
     app.innerHTML = '';
     statusPane = null; editorPane = null; editor = null;
-    // There is no account to choose: the password is the only credential. This
-    // field exists solely so password managers have an identity to file the
-    // entry under — many will not offer to save a password-only form, and some
-    // save it against a blank user and then never offer to fill it again. It is
-    // readonly, skipped by Tab, and never sent to the server.
-    var user = h('input', { type: 'text', autocomplete: 'username', value: 'admin',
-                            readonly: 'readonly', tabindex: '-1', 'aria-label': 'Account' });
-    user.className = 'account';
+    // The account name is checked for real now. It is still ONE account, and a
+    // wrong name gives exactly the same answer as a wrong password, so it opens
+    // no way to enumerate users — but it is no longer a decoration, and the
+    // password manager gets an identity that means something.
+    var user = h('input', { type: 'text', autocomplete: 'username',
+                            'aria-label': 'Username', placeholder: 'Username' });
     var input = h('input', { type: 'password', autocomplete: 'current-password',
                              'aria-label': 'Admin password', placeholder: 'Password' });
+    var totp = h('input', { type: 'text', autocomplete: 'one-time-code',
+                            inputmode: 'numeric', maxlength: '6',
+                            'aria-label': 'Authenticator code',
+                            placeholder: '6-digit code from your authenticator' });
+    var totpRow = h('div', {}, [totp]);
+    totpRow.className = 'hidden';
     var err = h('div', { class: 'err', text: message || '' });
     var btn = h('button', { class: 'primary', type: 'submit', text: 'Sign in' });
     var form = h('form', { class: 'login card pad' }, [
       h('h1', { text: 'feedgen admin' }),
       h('p', { text: 'Config and status for the feed generator.' }),
-      user, input, h('div', { class: 'row' }, [btn]), err
+      user, input, totpRow, h('div', { class: 'row' }, [btn]), err
     ]);
+
+    // Ask whether a second factor is wanted, rather than showing a code field
+    // that may be pointless or hiding one that is required.
+    var wantsTotp = false;
+    api('login-meta').then(function (r) { return r.json(); }).then(function (b) {
+      wantsTotp = !!(b && b.totpRequired);
+      if (wantsTotp) totpRow.className = '';
+    }).catch(function () { /* a login attempt would say so anyway */ });
+
     form.addEventListener('submit', function (e) {
       e.preventDefault();
       btn.disabled = true; err.textContent = '';
-      api('login', { password: input.value }).then(function (r) {
+      var payload = { user: user.value, password: input.value };
+      if (wantsTotp) payload.totp = totp.value;
+      api('login', payload).then(function (r) {
         return r.json().then(function (b) { return { status: r.status, body: b }; });
       }).then(function (res) {
         btn.disabled = false;
-        if (res.status === 200) { input.value = ''; load(); }
-        else { err.textContent = res.body.error || 'Sign-in failed'; input.select(); }
+        if (res.status === 200) { input.value = ''; totp.value = ''; load(); return; }
+        // A rejected code leaves the password alone: retyping a long password
+        // because the 30-second window turned over is miserable.
+        if (res.body.needsTotp) {
+          wantsTotp = true; totpRow.className = '';
+          totp.value = ''; totp.focus();
+        } else {
+          input.select();
+        }
+        err.textContent = res.body.error || 'Sign-in failed';
       }).catch(function () {
         btn.disabled = false; err.textContent = 'Network error';
       });
     });
     app.appendChild(form);
-    input.focus();
+    user.focus();
   }
 
   function renderStatus(s, root) {

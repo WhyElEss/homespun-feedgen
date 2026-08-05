@@ -144,7 +144,16 @@ export const createAdminRouter = (opts: AdminRouterOptions = {}): express.Router
 
   // Login and logout must sit in front of the guard, or signing in would
   // require being signed in.
-  if (opts.auth) router.use(opts.auth.routes)
+  if (opts.auth) {
+    const auth = opts.auth
+    router.use(auth.routes)
+    // Unauthenticated on purpose: it says only whether a second factor is
+    // required, which one login attempt would reveal anyway, and without it the
+    // form has to either ask for a code that is not wanted or hide one that is.
+    router.get('/api/login-meta', (_req, res) => {
+      res.json({ ok: true, totpRequired: auth.totpRequired })
+    })
+  }
 
   const guard: express.RequestHandler = opts.auth
     ? opts.auth.guard

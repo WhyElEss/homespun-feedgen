@@ -116,7 +116,10 @@ const run = async () => {
 
   console.log('\n── with auth, everything but the page is refused')
   {
-    const auth = createAdminAuth({ passwordHash: hash })
+    // A generous failure budget here on purpose: this section deliberately
+    // gets a lot of logins wrong, and the limiter has its own section below.
+    // Sharing the default made an unrelated new check trip it.
+    const auth = createAdminAuth({ passwordHash: hash, maxFailuresPerIp: 50 })
     const { call, close } = await mount(
       createAdminRouter({ auth, page: true, status: async () => ({ marker: true } as any) }),
     )
@@ -165,19 +168,29 @@ const run = async () => {
       (await call('/api/status', { cookie: 'feedgen_admin=notatoken' })).status === 401,
     )
 
-    const wrong = await call('/api/login', { body: { password: 'nope' } })
+    const wrong = await call('/api/login', { body: { user: 'admin', password: 'nope' } })
     check('a wrong password is refused', wrong.status === 401)
-    check('...without saying which part was wrong', wrong.body.error === 'wrong password')
+    check('...without saying which part was wrong',
+      wrong.body.error === 'wrong username or password')
     check(
       'a missing password field does not crash the route',
       (await call('/api/login', { body: {} })).status === 401,
     )
     check(
       'a non-string password does not crash it either',
-      (await call('/api/login', { body: { password: { $ne: null } } })).status === 401,
+      (await call('/api/login', { body: { user: 'admin', password: { $ne: null } } })).status === 401,
     )
 
-    const good = await call('/api/login', { body: { password: PASSWORD } })
+    check(
+      'the account name is now checked, not decorative',
+      (await call('/api/login', { body: { user: 'someone-else', password: PASSWORD } })).status === 401,
+    )
+    check(
+      'a missing account name is refused too',
+      (await call('/api/login', { body: { password: PASSWORD } })).status === 401,
+    )
+
+    const good = await call('/api/login', { body: { user: 'admin', password: PASSWORD } })
     check('the right password signs in', good.status === 200 && good.body.ok === true)
     const setCookie = good.headers.get('set-cookie') ?? ''
     check('the cookie is HttpOnly', setCookie.includes('HttpOnly'))
@@ -201,7 +214,7 @@ const run = async () => {
     )
     check(
       'a cross-origin login is refused',
-      (await call('/api/login', { body: { password: PASSWORD }, origin: 'https://evil.example' }))
+      (await call('/api/login', { body: { user: 'admin', password: PASSWORD }, origin: 'https://evil.example' }))
         .status === 403,
     )
 
@@ -218,11 +231,11 @@ const run = async () => {
     const { call, close } = await mount(createAdminRouter({ auth }))
     const codes: number[] = []
     for (let i = 0; i < 5; i++) {
-      codes.push((await call('/api/login', { body: { password: 'nope' } })).status)
+      codes.push((await call('/api/login', { body: { user: 'admin', password: 'nope' } })).status)
     }
     check('the first attempts are plain refusals', codes.slice(0, 3).every((c) => c === 401), codes.join(','))
     check('further attempts are rate limited', codes.slice(3).every((c) => c === 429))
-    const locked = await call('/api/login', { body: { password: PASSWORD } })
+    const locked = await call('/api/login', { body: { user: 'admin', password: PASSWORD } })
     check('...and the CORRECT password is locked out too', locked.status === 429)
     check('...with a Retry-After', Number(locked.headers.get('retry-after')) > 0)
     close()
@@ -235,7 +248,7 @@ const run = async () => {
     // rather than on the behaviour under test.
     const auth = createAdminAuth({ passwordHash: hash, sessionIdleMs: 1000 })
     const { call, close } = await mount(createAdminRouter({ auth, status: async () => ({} as any) }))
-    const cookie = cookieFrom(await call('/api/login', { body: { password: PASSWORD } }))
+    const cookie = cookieFrom(await call('/api/login', { body: { user: 'admin', password: PASSWORD } }))
     check('fresh session works', (await call('/api/status', { cookie })).status === 200)
     await new Promise((r) => setTimeout(r, 1300))
     check('an idle session is dropped', (await call('/api/status', { cookie })).status === 401)
