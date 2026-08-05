@@ -1,0 +1,38 @@
+# The build context used to be the whole project directory, so `COPY . .` put
+# three things into every image that had no business being there:
+#
+#   - node_modules from the host (139 MB), which the RUN below then installed
+#     again on top: the same tree stored twice, in two layers
+#   - data/, which is MOUNTED at runtime (./data:/data in docker-compose.yml),
+#     so the copy at /app/data was never read by anything — it was a frozen
+#     snapshot of db.sqlite, of filters.json with the private patterns, and of
+#     every filters.json.bak-* and db-backup-* ever left in there
+#   - .env, carrying TUNNEL_TOKEN and the admin password hash
+#
+# The .env one was not merely untidy. src/index.ts calls dotenv.config(), which
+# does not override a variable already set — but DOES fill a gap. So a variable
+# deleted from the host .env in order to switch something off was silently
+# restored from the copy baked into the image at build time. Verified rather
+# than assumed: a container handed no FEEDGEN_ADMIN_UI at all still logged
+# "admin: UI mounted at /admin on the public app", using the password hash
+# frozen in at build. That is the documented fastest rollback for the admin UI,
+# and it could not have worked.
+#
+# Keep this list in step with .gitignore: the same things are wrong to publish
+# and wrong to bake in.
+
+node_modules
+.git
+.gitignore
+
+# Runtime state and secrets — mounted or supplied by compose, never copied.
+data
+backups
+.env
+.env.*
+*.bak*
+*.log
+
+.DS_Store
+Dockerfile
+.dockerignore
