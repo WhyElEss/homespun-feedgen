@@ -280,12 +280,13 @@ export const ADMIN_PAGE = `<!doctype html>
     var refresh = h('button', { text: 'Refresh' });
     refresh.addEventListener('click', function () { load(); });
 
+    stampEl = h('span', { class: 'small muted' });
     root.appendChild(h('header', {}, [
       h('h1', { text: 'feedgen admin' }),
       h('span', { class: 'mono muted', text: s.box.name }),
       boxPill,
       h('span', { class: 'spacer' }, []),
-      refresh, logout
+      stampEl, refresh, logout
     ]));
 
     // ── service identity
@@ -1727,34 +1728,34 @@ export const ADMIN_PAGE = `<!doctype html>
     return box;
   }
 
-  // The page is two independent panes, and the refresh only ever touches the
-  // first one. The first version re-rendered EVERYTHING every 30 seconds, which
-  // rebuilt the editor underneath whoever was using it: the feed picker snapped
-  // back to the first feed, the caret jumped out of the field being typed in,
-  // and unsaved edits vanished. A status poll must not be able to do that.
-  var timer = null;
+  // NO AUTO-REFRESH, deliberately. Of everything on this page exactly one number
+  // moves on a human timescale — how far behind the ingest cursor is — and a
+  // measurement showed the feeds gaining a single post per thirty seconds. That
+  // is not worth a redraw, and the redraw was not free: it rebuilt the editor
+  // under whoever was typing, and folded away a half-finished 2FA enrolment
+  // while its owner was in a password manager. Both were real bugs.
+  //
+  // What replaces it is honesty about age: the header says how old the reading
+  // is and grows more insistent as it sits, so stale numbers cannot be mistaken
+  // for live ones. That label updates its own text node and nothing else — no
+  // rebuild, no lost focus, no lost state.
   var statusPane = null, editorPane = null, editor = null;
-  // Results of the two on-demand checks. Held out here because the status pane
-  // redraws every 30 seconds: kept inside it, an answer would vanish while you
-  // were reading it.
+  var loadedAt = 0;
+  var stampEl = null;
+  // Answers to the two on-demand checks, and any half-finished 2FA enrolment.
+  // Held out here because the status pane is rebuilt whenever it reloads, and
+  // an answer that vanished mid-read would be worse than no answer.
   var jetstream = { readings: null, busy: false, chosen: null };
   var identity = { result: null, busy: false, error: null };
-  // The Security panel lives in the status pane, which redraws every 30
-  // seconds. Enrolment takes longer than that — you leave for a password
-  // manager and come back — so the half-finished state is held out here, and
-  // the poll stops entirely while it is open. The editor learned this same
-  // lesson; the panel had not.
   var totpEnrol = null;
 
-  function schedule() { timer = setTimeout(tick, 30000); }
-
-  function tick() {
-    // Even a status-only redraw is movement on the screen. While there are
-    // unsaved edits, hold still entirely — the editor says so in its toolbar.
-    if (editor && editor.isDirty()) { schedule(); return; }
-    if (totpEnrol) { schedule(); return; }
-    load();
+  function touchStamp() {
+    if (!stampEl || !loadedAt) return;
+    var age = Math.round((Date.now() - loadedAt) / 1000);
+    stampEl.textContent = age < 45 ? 'just now' : 'as of ' + ago(age) + ' ago';
+    stampEl.className = 'small ' + (age > 600 ? 'warn-text' : 'muted');
   }
+  setInterval(touchStamp, 10000);
 
   function panes() {
     if (statusPane) return;
@@ -1766,16 +1767,16 @@ export const ADMIN_PAGE = `<!doctype html>
   }
 
   function load() {
-    if (timer) { clearTimeout(timer); timer = null; }
     api('status').then(function (r) {
       if (r.status === 401) { renderLogin(); return; }
       if (!r.ok) throw new Error('status ' + r.status);
       return r.json().then(function (b) {
         panes();
+        loadedAt = Date.now();
         renderStatus(b.status, statusPane);
-        // Built once. Its own Reload button is how it refetches — never a poll.
+        // Built once. Its own Reload button is how it refetches.
         if (!editor) editor = renderConfigEditor(b.status, editorPane);
-        schedule();
+        touchStamp();
       });
     }).catch(function (e) {
       if (!statusPane) {
@@ -1784,7 +1785,6 @@ export const ADMIN_PAGE = `<!doctype html>
           h('p', { class: 'err', text: 'Could not load status: ' + e.message })
         ]));
       }
-      schedule();
     });
   }
 

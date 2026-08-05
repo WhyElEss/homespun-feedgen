@@ -469,20 +469,21 @@ const run = async () => {
     measured.includes('posts would be removed') && measured.includes('would remain'))
   check('...naming who would go', measured.includes('@dee'))
 
-  const beforeEnrolFetches = statusFetches
   console.log('\n── setting up two-factor survives a refresh')
   const setup = walk(app).find((e) => e.textContent === 'Set up two-factor')!
   check('the Security panel offers it', !!setup)
   setup.handlers['click']()
   await settle()
   check('...the key is shown', textOf(app).includes('JBSWY3DPEHPK3PXP'))
-  // The whole point: you leave for a password manager, the poll fires, and the
-  // panel must not fold back to the button under you.
-  await firePoll()
-  const afterPoll = textOf(app)
-  check('...and is STILL shown after a poll', afterPoll.includes('JBSWY3DPEHPK3PXP'))
-  check('...the poll did not re-ask for a new key', totpBegins === 1)
-  check('...nor refetch the status while enrolling', statusFetches === beforeEnrolFetches)
+  // The whole point: you leave for a password manager and come back, and the
+  // panel must not have folded back to the button under you. Nothing refreshes
+  // on its own any more, but a manual Refresh must not do it either.
+  const refreshDuringEnrol = walk(app).find((e) => e.textContent === 'Refresh')!
+  refreshDuringEnrol.handlers['click']()
+  await settle()
+  const afterRefresh = textOf(app)
+  check('...and is STILL shown after a refresh', afterRefresh.includes('JBSWY3DPEHPK3PXP'))
+  check('...which did not ask for a new key', totpBegins === 1)
   // Leave it closed, or every later poll in this file stays suppressed — which
   // is the behaviour under test, and would look like a different bug.
   const cancelEnrol = walk(app).find((e) => e.textContent === 'Cancel')!
@@ -490,27 +491,26 @@ const run = async () => {
   await settle()
   check('cancelling puts the button back', textOf(app).includes('Set up two-factor'))
 
-  console.log('\n── a status refresh must not disturb the editor')
+  console.log('\n── there is NO auto-refresh, and the page says how old it is')
   const beforePicker = find(app, 'select')[0]
   const beforeFetches = statusFetches
-  await firePoll()
-  check('the poll refetched the status', statusFetches === beforeFetches + 1)
+  check('nothing was scheduled to refetch', timers.length === 0, `${timers.length} timers`)
+  check('the header states the age of the reading',
+    textOf(app).includes('just now') || textOf(app).includes('as of'))
+
+  console.log('\n── a manual Refresh must not disturb the editor')
+  const refreshBtn = walk(app).find((e) => e.textContent === 'Refresh')!
+  refreshBtn.handlers['click']()
+  await settle()
+  check('it refetched the status', statusFetches === beforeFetches + 1)
   check('...but did not rebuild the editor', find(app, 'select')[0] === beforePicker)
   check('...leaving the chosen feed selected', find(app, 'select')[0].value === 'radio')
-
-  console.log('\n── unsaved changes freeze the refresh')
-  const pane = walk(app).find((e) => e.tagName === 'DIV' && !!e.handlers['input'])!
-  // Not textarea[0] any more: the record card's description box now renders
-  // first, and grabbing that one instead produced a confusing type error.
   const dids = find(app, 'textarea').find((t) => t.value.includes('did:plc:someone'))!
   dids.value = 'did:plc:someone\ndid:plc:another'
   dids.handlers['input']()
-  pane.handlers['input']()   // the delegated listener the real DOM would bubble to
-  check('the toolbar says the refresh is paused', textOf(app).includes('auto-refresh paused'))
-  const held = statusFetches
-  await firePoll()
-  check('...and nothing was refetched', statusFetches === held)
-  check('...while the edit survived',
+  refreshBtn.handlers['click']()
+  await settle()
+  check('...and an unsaved edit survives it',
     find(app, 'textarea').some((t) => t.value.includes('another')))
 
   console.log(`\n${pass === total ? 'All' : `${pass} of`} ${total} checks passed`)
