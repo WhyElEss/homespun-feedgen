@@ -179,6 +179,16 @@ export const ADMIN_PAGE = `<!doctype html>
 
   @media (max-width: 40rem) {
     :root { --gutter: .8rem; }
+    /* THE reason this page opened looking zoomed in and could be dragged
+       sideways: iOS Safari zooms the whole page when focus lands in a form
+       control whose font is smaller than 16px, and never zooms back out. Body
+       text here is 15px and controls inherit it — 16/15 is 1.067, which is
+       exactly the "about 105%" that was reported. The login form focuses its
+       first field on render, so it happened before anything was even touched.
+       16px on every control is the whole fix; nothing else about it is a
+       layout problem. */
+    input, select, textarea { font-size: 16px; }
+    textarea.pat { font-size: 15px; }
     body { padding: 1rem var(--gutter) 3rem; }
     /* Stacked, so a long value gets the full width instead of fighting its
        label for it across a flex row. */
@@ -324,7 +334,14 @@ export const ADMIN_PAGE = `<!doctype html>
       });
     });
     app.appendChild(form);
-    user.focus();
+    // Not on a narrow screen: autofocus there pops the keyboard over the form
+    // before it has been read, and it is what triggered the iOS zoom at load.
+    // The CSS above makes the zoom harmless either way; this keeps the page
+    // still on arrival.
+    var narrow = typeof window !== 'undefined' && window.matchMedia
+      ? window.matchMedia('(max-width: 40rem)').matches
+      : false;
+    if (!narrow) user.focus();
   }
 
   function renderStatus(s, root) {

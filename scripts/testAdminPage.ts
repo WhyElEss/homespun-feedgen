@@ -166,6 +166,8 @@ const run = async () => {
         { endpoint: 'wss://jet3.example', medianAgeSec: null, samples: 0, error: 'timed out' },
       ] }
     }
+    else if (url === '/admin/api/login-meta') { body = { ok: true, totpRequired: true } }
+    else if (url === '/admin/api/logout') { body = { ok: true } }
     else if (url === '/admin/totp/status') {
       body = { ok: true, enabled: false, broken: false, source: null,
                managedHere: true, file: '/data/admin-totp.json' }
@@ -230,6 +232,8 @@ const run = async () => {
   // demand: the whole point of these last checks is what a poll does to an
   // editor someone is using.
   const timers: Function[] = []
+  // The page checks window.matchMedia before autofocusing; the stub has no
+  // window at all, which is exactly the "not available" branch it must survive.
   const fn = new Function(
     'document', 'location', 'fetch', 'setTimeout', 'clearTimeout', 'confirm',
     script,
@@ -423,6 +427,10 @@ const run = async () => {
   // The symptom this prevents: the page is built by script after the first
   // layout, so iOS keeps a layout viewport sized to whatever JS injected and
   // lets the whole page be dragged sideways until a pinch resets it.
+  // iOS zooms the page in when focus enters a control under 16px and never
+  // zooms out again — the single cause of "opens at ~105% and drags sideways".
+  check('form controls are 16px on a phone, so iOS will not zoom in',
+    css.includes('input, select, textarea { font-size: 16px; }'))
   check('the page itself can never scroll sideways',
     css.includes('html, body { overflow-x: hidden; max-width: 100%; }'))
   check('a card is sized by its container, not by the table inside it',
@@ -567,6 +575,23 @@ const run = async () => {
   await settle()
   check('...and an unsaved edit survives it',
     find(app, 'textarea').some((t) => t.value.includes('another')))
+
+  // The login form is the first thing every visitor sees and nothing here had
+  // ever rendered it. It also reaches for window.matchMedia, which does not
+  // exist in this stub — the branch has to survive that.
+  console.log('\n── the login form renders')
+  const signOut = walk(app).find((e) => e.textContent === 'Sign out')!
+  signOut.handlers['click']()
+  await settle()
+  const login = textOf(app)
+  check('signing out shows the form', login.includes('feedgen admin'))
+  const fields = find(app, 'input')
+  check('...with a username, a password and a code field', fields.length === 3,
+    fields.map((f) => f.attrs.placeholder || f.attrs.type).join(' / '))
+  check('...the username field is real, not readonly',
+    !fields.some((f) => f.attrs.readonly !== undefined))
+  check('...and it asked whether a second factor is needed',
+    requested.some((r) => r.indexOf('/admin/api/login-meta') > 0))
 
   console.log(`\n${pass === total ? 'All' : `${pass} of`} ${total} checks passed`)
   process.exit(pass === total ? 0 : 1)
