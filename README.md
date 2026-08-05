@@ -9,7 +9,7 @@ Self-hosted [Bluesky feed generator](https://github.com/bluesky-social/feed-gene
 - **Many feeds, one process** — all your feeds share a single Jetstream connection, one database and one tunnel. Each keeps its own patterns, its own moderation list and its own retention window.
 - **Hot-reloadable filters in one JSON file** (`data/filters.json`) — regex include/exclude with SkyFeed-compatible semantics, author-DID feeds, GIF/quote-post toggles, moderation-list exclusion. Edit the file; the running service picks it up in ~10 seconds. A broken edit is rejected — the service keeps the previous config and logs the error.
 - **Cloudflare Tunnel** in the same compose stack — HTTPS on port 443 with no port forwarding and no public IP.
-- **`did:plc` service identity** (survives domain changes), with a script that handles email-2FA accounts.
+- **`did:plc` service identity** — the hostname lives in a service entry, not in the DID, so moving domains keeps every feed's URI, likes and subscribers ([DOMAIN-MOVE.md](DOMAIN-MOVE.md)). Includes a script that handles email-2FA accounts.
 - **A SkyFeed migration kit** — take over an existing feed in place, keeping its AT-URI, subscribers and likes. Plus a disaster-recovery script, because SkyFeed deletes the live record more readily than you would expect (see below — this one bites).
 - **Diagnostics** — `whyNot.ts` explains stage-by-stage why a given post did or didn't get into your feed; `probeJetstream.js` measures the lag of all public Jetstream instances (yes, one of them can silently fall an hour behind).
 
@@ -73,6 +73,10 @@ Fifteen dollars a year buys exactly one thing, and it is the right one: **freedo
 - With `did:web` and no domain of your own you would be stuck for good: there the hostname is baked into the DID itself, so moving means a **new DID — a new feed, with no likes and no subscribers.** This is precisely why `setupServiceDid` exists and why `did:plc` is not optional advice when you start on a borrowed hostname.
 
 A Bluesky account is required either way, since it publishes the feed records — but the default `you.bsky.social` is fine. Using a domain as your *handle* is a separate, entirely optional thing.
+
+#### Changing the hostname later
+
+Possible, planned for, and undramatic — **[DOMAIN-MOVE.md](DOMAIN-MOVE.md)** is the runbook. The short version: your DID contains no hostname, so feed records, AT-URIs, likes and subscribers do not move with the domain. Only the `#bsky_fg` service endpoint does, and the trick is to serve both hostnames at once and flip the endpoint in the middle, because Bluesky caches DID documents for a while after the change.
 
 ### Service DID (recommended: your own `did:plc`)
 
