@@ -75,8 +75,11 @@ export const ADMIN_PAGE = `<!doctype html>
      a letter apiece. Give it a floor and let its own container scroll — the
      card still lines up with everything else, only its contents slide. */
   .wrap table { min-width: 30rem; }
+  /* nowrap or it is not a pill: in a narrow column the label wraps onto two
+     lines and the 999px radius turns the whole thing into a circle. */
   .pill { display: inline-block; padding: .1rem .5rem; border-radius: 999px;
-          font-size: .75rem; font-weight: 600; border: 1px solid currentColor; }
+          font-size: .75rem; font-weight: 600; border: 1px solid currentColor;
+          white-space: nowrap; }
   .pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); } .pill.bad { color: var(--bad); }
   .pill.idle { color: var(--muted); }
   /* A cursor left behind by an endpoint switch: still worth showing, but it
@@ -157,7 +160,8 @@ export const ADMIN_PAGE = `<!doctype html>
   button.x:hover { color: var(--bad); }
   .chips { display: flex; gap: .35rem; flex-wrap: wrap; }
   .chip { font-size: .78rem; padding: .2rem .6rem; border-radius: 999px;
-          border: 1px solid var(--line); background: var(--bg); color: var(--muted); }
+          border: 1px solid var(--line); background: var(--bg); color: var(--muted);
+          white-space: nowrap; }
   .chip.on { background: var(--ok); border-color: var(--ok); color: #fff; }
   .chip:disabled { opacity: 1; }
   .trow { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
@@ -1594,7 +1598,7 @@ export const ADMIN_PAGE = `<!doctype html>
         h('thead', {}, [h('tr', {}, [
           h('th', { text: 'Jetstream instance' }),
           h('th', { text: 'Posts arriving this far behind' }),
-          h('th', { text: 'Sampled' }), h('th', { text: '' })])]),
+          h('th', { text: 'Sampled' }), h('th', { text: 'Ingest source' })])]),
         h('tbody', {}, rows)])]));
 
     var tools = h('div', { class: 'toolbar' }, [btn]);

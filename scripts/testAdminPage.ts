@@ -322,6 +322,7 @@ const run = async () => {
 
   const useThis = walk(app).find((e) => e.textContent === 'use this')!
   check('a non-active instance offers a switch', !!useThis)
+  check('...and that column is labelled', probed2.includes('Ingest source'))
   useThis.handlers['click']()
   await settle()
   const chosen = textOf(app)
@@ -464,6 +465,11 @@ const run = async () => {
   // has now happened once with backslashes and once with backticks.
   console.log('\n── the page source stays inside its template literal')
   check('no stray backticks in the rendered page', !ADMIN_PAGE.slice(1, -1).includes('`'))
+  // A pill that wraps in a narrow column becomes a circle, because of its own
+  // 999px radius. Both badge shapes must stay on one line.
+  check('badges never wrap into circles',
+    /\.pill \{[^}]*white-space: nowrap/.test(ADMIN_PAGE) &&
+      /\.chip \{[^}]*white-space: nowrap/.test(ADMIN_PAGE))
 
   console.log('\n── nothing invisible leaks into the UI')
   const CTRL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/
