@@ -209,6 +209,13 @@ const run = async () => {
       (await call('/totp/status')).body.enabled === false)
     check('...and nothing is on disk', !fs.existsSync(path.join(dir, 'admin-totp.json')))
 
+    // The bug that shipped first: pressing the button again handed back a NEW
+    // secret, so the one just saved in a password manager was already dead.
+    const again2 = await call('/totp/begin', {})
+    check('pressing set-up again returns the SAME secret',
+      again2.body.secret === begun.body.secret)
+    check('...and says how long it stays valid', again2.body.expiresInSec > 0)
+
     const wrong = await call('/totp/enable', { code: '000000' })
     check('a wrong code does not enable it', wrong.status === 400)
     check('...and says a clock problem is the likely cause',

@@ -1554,6 +1554,9 @@ export const ADMIN_PAGE = `<!doctype html>
 
     function draw(st) {
       body.innerHTML = '';
+      // A setup in progress outranks whatever the status says: coming back from
+      // the authenticator app must land you where you left off.
+      if (totpEnrol) { enrol(totpEnrol); return; }
       var on = st.enabled;
       body.appendChild(h('div', { class: 'row wrapx' }, [
         h('span', { class: 'pill ' + (st.broken ? 'bad' : on ? 'ok' : 'idle'),
@@ -1587,7 +1590,9 @@ export const ADMIN_PAGE = `<!doctype html>
             if (res.status !== 200) {
               out.className = 'msg bad'; out.textContent = res.body.error; return;
             }
-            out.textContent = ''; enrol(res.body);
+            out.textContent = '';
+            totpEnrol = res.body;
+            enrol(totpEnrol);
           }).catch(function (e) {
             start.disabled = false;
             out.className = 'msg bad'; out.textContent = 'Network error: ' + e.message;
@@ -1641,7 +1646,7 @@ export const ADMIN_PAGE = `<!doctype html>
                               placeholder: '6-digit code' });
       var confirm2 = h('button', { class: 'primary', text: 'Confirm and enable' });
       var cancel = h('button', { text: 'Cancel' });
-      cancel.addEventListener('click', refresh);
+      cancel.addEventListener('click', function () { totpEnrol = null; refresh(); });
       confirm2.addEventListener('click', function () {
         confirm2.disabled = true;
         out.className = 'msg'; out.textContent = 'Checking the code…';
@@ -1653,6 +1658,7 @@ export const ADMIN_PAGE = `<!doctype html>
             out.className = 'msg bad'; out.textContent = res.body.error; return;
           }
           out.className = 'msg ok'; out.textContent = res.body.note;
+          totpEnrol = null;
           refresh();
         }).catch(function (e) {
           confirm2.disabled = false;
@@ -1660,6 +1666,9 @@ export const ADMIN_PAGE = `<!doctype html>
         });
       });
       body.appendChild(h('div', { class: 'row wrapx' }, [code, confirm2, cancel]));
+      body.appendChild(h('p', { class: 'small muted', text:
+        'Take your time — this page stops refreshing until you confirm or ' +
+        'cancel, and the key above stays the same if you come back to it.' }));
       body.appendChild(h('p', { class: 'small muted', text:
         'Locked out later? Delete the file this page names under Security on ' +
         'the box, and the password alone works again — no restart needed.' }));
@@ -1720,6 +1729,12 @@ export const ADMIN_PAGE = `<!doctype html>
   // were reading it.
   var jetstream = { readings: null, busy: false, chosen: null };
   var identity = { result: null, busy: false, error: null };
+  // The Security panel lives in the status pane, which redraws every 30
+  // seconds. Enrolment takes longer than that — you leave for a password
+  // manager and come back — so the half-finished state is held out here, and
+  // the poll stops entirely while it is open. The editor learned this same
+  // lesson; the panel had not.
+  var totpEnrol = null;
 
   function schedule() { timer = setTimeout(tick, 30000); }
 
@@ -1727,6 +1742,7 @@ export const ADMIN_PAGE = `<!doctype html>
     // Even a status-only redraw is movement on the screen. While there are
     // unsaved edits, hold still entirely — the editor says so in its toolbar.
     if (editor && editor.isDirty()) { schedule(); return; }
+    if (totpEnrol) { schedule(); return; }
     load();
   }
 

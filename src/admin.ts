@@ -236,12 +236,20 @@ export const createAdminRouter = (opts: AdminRouterOptions = {}): express.Router
         })
         return
       }
-      const secret = generateSecret()
-      pending = { secret, at: Date.now() }
+      // Idempotent while a setup is alive. Regenerating on every press means
+      // the secret someone just saved in their password manager is already
+      // dead by the time they come back to type a code — which is exactly what
+      // happened the first time this shipped.
+      if (!pending || Date.now() - pending.at > PENDING_TTL_MS) {
+        pending = { secret: generateSecret(), at: Date.now() }
+      }
       res.json({
         ok: true,
-        secret,
-        uri: otpauthUri(secret, user, hostname),
+        secret: pending.secret,
+        uri: otpauthUri(pending.secret, user, hostname),
+        expiresInSec: Math.round(
+          (PENDING_TTL_MS - (Date.now() - pending.at)) / 1000,
+        ),
         note: 'Not enabled yet — enter a code from the app to confirm it works.',
       })
     })

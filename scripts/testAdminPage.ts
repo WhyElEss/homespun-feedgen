@@ -138,6 +138,7 @@ const run = async () => {
   const puts: any[] = []
   const resolved: string[] = []
   const probes: any[] = []
+  let totpBegins = 0
   let statusFetches = 0
   const requested: string[] = []
   const fetchStub = (url: string, init?: any) => {
@@ -163,6 +164,15 @@ const run = async () => {
         { endpoint: 'wss://jet2.example', medianAgeSec: 6800, samples: 20, error: null },
         { endpoint: 'wss://jet3.example', medianAgeSec: null, samples: 0, error: 'timed out' },
       ] }
+    }
+    else if (url === '/admin/totp/status') {
+      body = { ok: true, enabled: false, broken: false, source: null,
+               managedHere: true, file: '/data/admin-totp.json' }
+    }
+    else if (url === '/admin/totp/begin') {
+      totpBegins++
+      body = { ok: true, secret: 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP',
+               uri: 'otpauth://totp/x', expiresInSec: 600, note: 'not enabled yet' }
     }
     else if (url === '/admin/identity') {
       body = { ok: true, identity: { serviceDid: 'did:plc:s', handle: 'me.example',
@@ -458,6 +468,27 @@ const run = async () => {
   check('...and the result is shown',
     measured.includes('posts would be removed') && measured.includes('would remain'))
   check('...naming who would go', measured.includes('@dee'))
+
+  const beforeEnrolFetches = statusFetches
+  console.log('\n── setting up two-factor survives a refresh')
+  const setup = walk(app).find((e) => e.textContent === 'Set up two-factor')!
+  check('the Security panel offers it', !!setup)
+  setup.handlers['click']()
+  await settle()
+  check('...the key is shown', textOf(app).includes('JBSWY3DPEHPK3PXP'))
+  // The whole point: you leave for a password manager, the poll fires, and the
+  // panel must not fold back to the button under you.
+  await firePoll()
+  const afterPoll = textOf(app)
+  check('...and is STILL shown after a poll', afterPoll.includes('JBSWY3DPEHPK3PXP'))
+  check('...the poll did not re-ask for a new key', totpBegins === 1)
+  check('...nor refetch the status while enrolling', statusFetches === beforeEnrolFetches)
+  // Leave it closed, or every later poll in this file stays suppressed — which
+  // is the behaviour under test, and would look like a different bug.
+  const cancelEnrol = walk(app).find((e) => e.textContent === 'Cancel')!
+  cancelEnrol.handlers['click']()
+  await settle()
+  check('cancelling puts the button back', textOf(app).includes('Set up two-factor'))
 
   console.log('\n── a status refresh must not disturb the editor')
   const beforePicker = find(app, 'select')[0]
