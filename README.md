@@ -35,12 +35,44 @@ docker compose logs -f feedgen
 
 Which feeds exist is decided by `data/filters.json`, not by the environment: every key under `feeds` is one feed, and the key is the record key you publish it under.
 
-### Expose it: Cloudflare Tunnel
+### Expose it
+
+What the protocol needs is one thing: **a stable public HTTPS address with a valid certificate**, which Bluesky's AppView can call `getFeedSkeleton` on. Nothing here has to be reachable from your LAN, and nothing needs a public IP or a forwarded port.
+
+That address is the only load-bearing use of `FEEDGEN_HOSTNAME`: `setupServiceDid` writes it into your DID document as the `#bsky_fg` service endpoint, and that is where Bluesky will knock. (The `/.well-known/did.json` route uses it too, but only as the `did:web` fallback — with a `did:plc` service identity, which is what this project recommends, that route deliberately answers 404.)
+
+#### Cloudflare Tunnel — the tested path, needs a domain
 
 1. Cloudflare dashboard → **Networking → Tunnels → Create a tunnel** (type **Cloudflared**). On the environment screen pick **Docker** and copy only the token string after `--token` into `.env` as `TUNNEL_TOKEN`.
 2. `docker compose up -d cloudflared-feedgen` — the tunnel goes **Healthy**.
 3. Add a route (Published application): your subdomain + domain, Service URL **`http://feedgen:3000`**.
 4. Check: `curl https://feed.example.com/xrpc/app.bsky.feed.describeFeedGenerator`
+
+A **named** tunnel needs a domain on your Cloudflare account. This is the configuration this project actually runs on, and the one the rest of the README assumes.
+
+#### Without a domain
+
+A domain is **not** a protocol requirement — a hostname handed to you by a provider satisfies it just as well, as long as it is stable and serves valid HTTPS. Things that fit the shape of this service (a long-running process, a SQLite file on disk, an outbound WebSocket to Jetstream):
+
+- **Tailscale Funnel** — `machine.tailnet.ts.net`, free, stable across restarts;
+- **Fly.io** — `yourapp.fly.dev`, with a volume for `data/`;
+- any small VPS or PaaS that gives you a fixed subdomain and terminates TLS for you.
+
+Drop the `cloudflared-feedgen` service from `docker-compose.yml`, put whatever that provider gives you in `FEEDGEN_HOSTNAME`, and point it at the container's port 3000. Everything else in this README is unchanged.
+
+**Only the Cloudflare path above is tested here.** The alternatives satisfy the requirement as stated; none of them has been run against this project, so treat them as directions rather than recipes.
+
+**What does not work: Cloudflare quick tunnels** (`*.trycloudflare.com`) and anything else with an ephemeral hostname. The address is not a runtime setting — it is written into your DID document. Changing it is a signed PLC operation needing your main account password and an emailed code, so a name that moves on every restart is unusable, not merely inconvenient.
+
+#### Why a domain is still strongly recommended
+
+Fifteen dollars a year buys exactly one thing, and it is the right one: **freedom to move hosting without touching your feeds' identity.**
+
+- With `did:plc` and your own domain, moving to another machine, another country or another provider is a DNS or tunnel change. The DID does not move, the feed records do not change, and likes and subscribers — which hang off the record's AT-URI — never notice. That is what makes a hot standby on a second box a dashboard action rather than a migration.
+- With a provider's hostname you are tied to that provider. Leaving means editing the PLC document: doable, yours to do, but it needs the main account password and an emailed code every time.
+- With `did:web` and no domain of your own you would be stuck for good: there the hostname is baked into the DID itself, so moving means a **new DID — a new feed, with no likes and no subscribers.** This is precisely why `setupServiceDid` exists and why `did:plc` is not optional advice when you start on a borrowed hostname.
+
+A Bluesky account is required either way, since it publishes the feed records — but the default `you.bsky.social` is fine. Using a domain as your *handle* is a separate, entirely optional thing.
 
 ### Service DID (recommended: your own `did:plc`)
 
