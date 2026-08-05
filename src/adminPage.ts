@@ -135,6 +135,40 @@ export const ADMIN_PAGE = `<!doctype html>
   .cbox input { margin: 0; }
   .row.wrapx { flex-wrap: wrap; margin-top: 0; }
   .warn-text { color: var(--warn); }
+
+  /* ── fitting a phone ─────────────────────────────────────────────────────
+     Every horizontal overflow on this page has had the same two causes, and
+     the feed picker was only the most visible instance:
+
+       1. a flex or grid child will NOT shrink below its own content unless it
+          is given min-width: 0 — true of a <select> with a long option, of a
+          value in a key/value row, of a table cell;
+       2. DIDs, at:// URIs and hostnames contain no spaces, so with nowhere to
+          break they set a floor under the width no shrinking can get past.
+
+     So: permission to shrink, and permission to break. */
+  .kv { flex-wrap: wrap; }
+  .kv dt { flex: 0 0 auto; }
+  .kv dd { min-width: 0; overflow-wrap: anywhere; }
+  th, td, .mono, .small { overflow-wrap: anywhere; }
+  .row > *, .toolbar > *, .trow > *, .picker > * { min-width: 0; }
+  input, select, textarea, img, pre { max-width: 100%; }
+  pre.cmd { white-space: pre-wrap; word-break: break-all; }
+
+  @media (max-width: 40rem) {
+    body { padding: 1rem .7rem 3rem; }
+    /* Stacked, so a long value gets the full width instead of fighting its
+       label for it across a flex row. */
+    .kv { flex-direction: column; align-items: flex-start; gap: .05rem; }
+    .kv dd { text-align: left; }
+    .grid { grid-template-columns: 1fr; }
+    .picker { flex-wrap: wrap; }
+    .picker select { max-width: 100%; }
+    table { font-size: .8rem; }
+    th, td { padding: .45rem .4rem; }
+    h2 { margin-top: 1.5rem; }
+    img.qr { width: 100%; max-width: 260px; height: auto; }
+  }
   pre.cmd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem;
             background: var(--bg); border: 1px solid var(--line); border-radius: 7px;
             padding: .5rem .6rem; margin: .4rem 0 0; overflow-x: auto; }

@@ -398,6 +398,24 @@ const run = async () => {
   // A \b written with one backslash too few stops being a word boundary and
   // becomes the BACKSPACE character, which the browser draws as a little box.
   // Nothing else notices: the page parses, renders and behaves normally.
+  // These rules are the difference between a page that fits a phone and one
+  // that slides sideways; each was added after a real overflow, and deleting
+  // any of them brings that overflow back silently.
+  console.log('\n── the page is allowed to fit a narrow screen')
+  const css = ADMIN_PAGE.split('<style>')[1].split('</style>')[0]
+  for (const rule of [
+    '.kv dd { min-width: 0; overflow-wrap: anywhere; }',
+    '.picker select { flex: 1; min-width: 0;',
+    '@media (max-width: 40rem)',
+    'flex-direction: column',
+    'grid-template-columns: 1fr',
+  ]) {
+    check(`css keeps: ${rule.slice(0, 46)}`, css.includes(rule))
+  }
+  check('long unbroken strings may break', css.includes('overflow-wrap: anywhere'))
+  check('nothing may exceed its container',
+    css.includes('input, select, textarea, img, pre { max-width: 100%; }'))
+
   console.log('\n── nothing invisible leaks into the UI')
   const CTRL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/
   const dirty = walk(app).filter(
