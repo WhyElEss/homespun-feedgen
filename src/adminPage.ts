@@ -137,6 +137,10 @@ export const ADMIN_PAGE = `<!doctype html>
             padding: .5rem .6rem; margin: .4rem 0 0; overflow-x: auto; }
   button.linkish { border: none; background: none; color: var(--accent);
                    padding: .2rem 0; font-size: .85rem; }
+  /* Fixed white plate whatever the theme: an inverted QR is one most scanners
+     will not read. */
+  img.qr { width: 200px; height: 200px; image-rendering: pixelated;
+           background: #fff; border-radius: 8px; padding: 6px; display: block; }
   img.avatar { width: 72px; height: 72px; border-radius: 12px; object-fit: cover;
                border: 1px solid var(--line); background: var(--bg); }
   .grow { flex: 1; min-width: 12rem; }
@@ -1634,9 +1638,15 @@ export const ADMIN_PAGE = `<!doctype html>
     function enrol(d) {
       body.innerHTML = '';
       body.appendChild(h('p', { class: 'small', text:
-        'Add this to your authenticator app, then enter the code it shows. ' +
+        'Scan this with your authenticator app, then enter the code it shows. ' +
         'Nothing is stored until that code checks out.' }));
-      body.appendChild(h('p', { class: 'small muted', text: 'Secret:' }));
+      if (d.qr) {
+        var img = h('img', { class: 'qr', alt: 'QR code for enrolment' });
+        img.setAttribute('src', d.qr);
+        body.appendChild(img);
+      }
+      body.appendChild(h('p', { class: 'small muted', text:
+        'Cannot scan it? Enter the secret by hand:' }));
       body.appendChild(h('pre', { class: 'cmd', text: d.secret }));
       body.appendChild(h('p', { class: 'small muted', text:
         'Or paste this URI into the app:' }));

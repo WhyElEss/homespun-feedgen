@@ -17,6 +17,7 @@ import {
   clearSecret,
   storeLocation,
 } from './adminTotp'
+import { qrDataUri } from './adminQr'
 import {
   login,
   getFeedRecord,
@@ -243,10 +244,12 @@ export const createAdminRouter = (opts: AdminRouterOptions = {}): express.Router
       if (!pending || Date.now() - pending.at > PENDING_TTL_MS) {
         pending = { secret: generateSecret(), at: Date.now() }
       }
+      const uri = otpauthUri(pending.secret, user, hostname)
       res.json({
         ok: true,
         secret: pending.secret,
-        uri: otpauthUri(pending.secret, user, hostname),
+        uri,
+        qr: qrDataUri(uri),
         expiresInSec: Math.round(
           (PENDING_TTL_MS - (Date.now() - pending.at)) / 1000,
         ),

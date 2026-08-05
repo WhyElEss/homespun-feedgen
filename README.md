@@ -310,7 +310,9 @@ That secret lives in `data/admin-totp.json` (mode 600), not in `.env`, and the d
 yarn adminTotp            # for the .env route: prints the secret and the line
 ```
 
-There is no QR code: drawing one needs either a dependency or a few hundred lines of encoder, and every authenticator accepts a secret typed by hand — the same fallback you get under a QR anyway. The script prints the code your app should be showing at that moment, so a clock problem surfaces during setup rather than at the login screen.
+The page shows a QR code, with the secret underneath for anything that cannot scan. `yarn adminTotp` prints only text, since a terminal is a poor place for a QR — and it prints the code your app should be showing at that moment, so a clock problem surfaces during setup rather than at the login screen.
+
+The QR costs one dependency, `qrcode-generator` — chosen because it pulls in **nothing** transitively, where the popular `qrcode` brings a CLI argument parser and its dependencies along for a feature nobody here uses. It supplies the matrix; `src/adminQr.ts` turns that into a single-path SVG, which is about 17 KB against the 33–57 KB the ready-made renderers produce for a URI this long. Note that a wrong QR could not lock anyone out even so: enrolment completes only on a code that matches the secret the server holds, so a bad image simply fails to enrol.
 
 Three details that separate a working second factor from a decorative one, all covered by `yarn test:admintotp`:
 
