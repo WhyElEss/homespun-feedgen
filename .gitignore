@@ -136,3 +136,10 @@ dist
 # Go build output
 go/go
 data/
+
+# Copies of .env and of source files, made by hand before a risky change. The
+# originals are ignored above; the copies were not, and a .env.bak carries the
+# same tunnel token as the file it was copied from.
+.env.bak*
+*.bak-*
+*.bak
