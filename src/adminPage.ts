@@ -31,6 +31,14 @@ export const ADMIN_PAGE = `<!doctype html>
   /* One gutter, used on both sides and nowhere else, so the page cannot end up
      with more air on one edge than the other. */
   :root { --gutter: 1rem; }
+  /* The PAGE never scrolls sideways; only a table inside its own card does.
+     This is a guard, not a substitute for the rules further down — everything
+     is sized to fit anyway. It is here because this page is built by script
+     AFTER the first layout: iOS measures the empty document, JS then injects a
+     table wider than the screen, and Safari keeps the wider layout viewport
+     rather than recomputing it. The page opens looking slightly zoomed in and
+     can be dragged left and right until a pinch forces the recalculation. */
+  html, body { overflow-x: hidden; max-width: 100%; }
   body {
     margin: 0; padding: 1.5rem var(--gutter) 3rem; background: var(--bg); color: var(--fg);
     font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -56,7 +64,10 @@ export const ADMIN_PAGE = `<!doctype html>
   th { color: var(--muted); font-weight: 600; font-size: .78rem;
        text-transform: uppercase; letter-spacing: .05em; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  /* width AND max-width, so the card is sized by its container and never by the
+     table inside it — that is what keeps the scrolling local to the card. */
+  .wrap { overflow-x: auto; -webkit-overflow-scrolling: touch;
+          width: 100%; max-width: 100%; }
   /* A table squeezed into a phone stops being a table: the columns collapse to
      a letter apiece. Give it a floor and let its own container scroll — the
      card still lines up with everything else, only its contents slide. */

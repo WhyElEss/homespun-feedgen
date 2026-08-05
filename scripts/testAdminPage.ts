@@ -420,6 +420,13 @@ const run = async () => {
       !css.includes('th, td, .mono'))
   check('a table keeps a floor so its container scrolls',
     css.includes('.wrap table { min-width: 30rem; }'))
+  // The symptom this prevents: the page is built by script after the first
+  // layout, so iOS keeps a layout viewport sized to whatever JS injected and
+  // lets the whole page be dragged sideways until a pinch resets it.
+  check('the page itself can never scroll sideways',
+    css.includes('html, body { overflow-x: hidden; max-width: 100%; }'))
+  check('a card is sized by its container, not by the table inside it',
+    css.includes('width: 100%; max-width: 100%; }'))
   check('the page uses one gutter for both edges',
     css.includes('padding: 1.5rem var(--gutter) 3rem') &&
       css.includes('padding: 1rem var(--gutter) 3rem'))
