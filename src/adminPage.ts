@@ -131,6 +131,8 @@ export const ADMIN_PAGE = `<!doctype html>
   .cbox input { margin: 0; }
   .row.wrapx { flex-wrap: wrap; margin-top: 0; }
   .warn-text { color: var(--warn); }
+  button.linkish { border: none; background: none; color: var(--accent);
+                   padding: .2rem 0; font-size: .85rem; }
   img.avatar { width: 72px; height: 72px; border-radius: 12px; object-fit: cover;
                border: 1px solid var(--line); background: var(--bg); }
   .grow { flex: 1; min-width: 12rem; }
@@ -873,7 +875,10 @@ export const ADMIN_PAGE = `<!doctype html>
       }
     }
 
-    // ── whyNot: one post, every feed, with the reason each one gives.
+    // ── whyNot: one post, answered from the point of view of the open feed.
+    var lastWhy = null;
+    var redrawWhy = function () {};
+    // ── whyNot
     function renderWhyNot(root) {
       var input = h('input', { type: 'text',
         placeholder: 'https://bsky.app/profile/…/post/… — or an at:// URI' });
@@ -904,6 +909,7 @@ export const ADMIN_PAGE = `<!doctype html>
 
       function show(r) {
         body.innerHTML = '';
+        lastWhy = r;
         var facts = h('div', { class: 'card pad' }, [h('dl', {}, [
           kv('Author', '@' + r.handle),
           kv('Posted', r.createdAt ? r.createdAt.replace('T', ' ').slice(0, 19) + 'Z' : '—'),
@@ -916,41 +922,90 @@ export const ADMIN_PAGE = `<!doctype html>
           body.appendChild(h('p', { class: 'small muted', text: 'alt text: ' + r.alt }));
         }
 
-        var rows = r.feeds.map(function (f) {
-          var verdict = h('td', {}, []);
-          verdict.appendChild(h('span', {
-            class: 'pill ' + (f.wouldIndex ? 'ok' : 'idle'),
-            text: f.wouldIndex ? 'matches' : 'dropped'
-          }));
-          var why = f.reason || (f.includeMatch
+        function reasonOf(f) {
+          return f.reason || (f.includeMatch
             ? 'matched "' + f.includeMatch + '" on ' + f.includeTarget
             : 'matches this feed');
-          var note = h('td', { class: 'small' }, []);
-          note.appendChild(document.createTextNode(why));
-          if (f.disagrees) {
-            note.appendChild(h('div', { class: 'small warn-text', text:
-              f.stored
-                ? 'But it IS stored — the config changed after this post was seen. ' +
-                  'auto-purge sweeps that within 5 minutes of a filter edit.'
-                : 'But it is NOT stored — most often retention pruned it, or it ' +
-                  'arrived while the config was different.' }));
-          }
-          return h('tr', {}, [
-            h('td', { class: 'mono small', text: f.key }),
-            h('td', { class: 'small', text: f.displayName || '—' }),
-            verdict,
-            h('td', { class: 'small', text: f.stored ? 'yes' : 'no' }),
-            note
+        }
+        function disagreement(f) {
+          if (!f.disagrees) return null;
+          return f.stored
+            ? 'But it IS stored — the config changed after this post was seen. ' +
+              'auto-purge sweeps that within 5 minutes of a filter edit.'
+            : 'But it is NOT stored — most often retention pruned it, or it ' +
+              'arrived while the config was different.';
+        }
+
+        // The feed being edited gets the whole answer. The others are a
+        // footnote: for feeds as unrelated as these, three lines of "no
+        // includePattern matched" every time is noise, and noise teaches you
+        // to stop reading the table.
+        var mine = null, others = [];
+        r.feeds.forEach(function (f) { if (f.key === key) mine = f; else others.push(f); });
+
+        if (mine) {
+          var head = h('div', { class: 'row wrapx' }, [
+            h('span', { class: 'pill ' + (mine.wouldIndex ? 'ok' : 'bad'),
+                        text: mine.wouldIndex ? 'matches' : 'dropped' }),
+            h('span', { class: 'small', text: (mine.displayName || mine.key) }),
+            h('span', { class: 'small muted',
+                        text: mine.stored ? 'in the database' : 'not in the database' })
           ]);
+          var kids = [head, h('p', { class: 'small', text: reasonOf(mine) })];
+          var note = disagreement(mine);
+          if (note) kids.push(h('p', { class: 'small warn-text', text: note }));
+          body.appendChild(h('div', { class: 'card pad' }, kids));
+        }
+
+        if (!others.length) return;
+        // Anything worth interrupting for: it landed elsewhere, or a feed's
+        // stored state contradicts its own filter.
+        var notable = others.filter(function (f) {
+          return f.wouldIndex || f.stored || f.disagrees;
         });
-        body.appendChild(h('div', { class: 'card wrap' }, [
-          h('table', {}, [
-            h('thead', {}, [h('tr', {}, [
-              h('th', { text: 'rkey' }), h('th', { text: 'Feed' }),
-              h('th', { text: 'Verdict' }), h('th', { text: 'In DB' }),
-              h('th', { text: 'Why' })])]),
-            h('tbody', {}, rows)])]));
+        var open = notable.length > 0;
+        var table = h('div', {}, []);
+        var toggle = h('button', { class: 'linkish' });
+
+        function draw() {
+          table.innerHTML = '';
+          toggle.textContent = (open ? '− ' : '+ ') + 'other feeds (' + others.length + ')' +
+            (notable.length
+              ? ' — ' + notable.length + ' with something to show'
+              : ' — none matched');
+          if (!open) return;
+          var rows = others.map(function (f) {
+            var v = h('td', {}, []);
+            v.appendChild(h('span', { class: 'pill ' + (f.wouldIndex ? 'ok' : 'idle'),
+                                      text: f.wouldIndex ? 'matches' : 'dropped' }));
+            var why = h('td', { class: 'small' }, []);
+            why.appendChild(document.createTextNode(reasonOf(f)));
+            var n = disagreement(f);
+            if (n) why.appendChild(h('div', { class: 'small warn-text', text: n }));
+            return h('tr', {}, [
+              h('td', { class: 'mono small', text: f.key }),
+              h('td', { class: 'small', text: f.displayName || '—' }),
+              v,
+              h('td', { class: 'small', text: f.stored ? 'yes' : 'no' }),
+              why
+            ]);
+          });
+          table.appendChild(h('div', { class: 'card wrap' }, [
+            h('table', {}, [
+              h('thead', {}, [h('tr', {}, [
+                h('th', { text: 'rkey' }), h('th', { text: 'Feed' }),
+                h('th', { text: 'Verdict' }), h('th', { text: 'In DB' }),
+                h('th', { text: 'Why' })])]),
+              h('tbody', {}, rows)])]));
+        }
+        toggle.addEventListener('click', function () { open = !open; draw(); });
+        body.appendChild(h('div', { class: 'toolbar' }, [toggle]));
+        body.appendChild(table);
+        draw();
       }
+
+      // Switching the feed re-answers the same post from that feed's side.
+      redrawWhy = function () { if (lastWhy) show(lastWhy); };
 
       root.appendChild(h('h2', { text: 'Why is this post (not) in a feed?' }));
       root.appendChild(h('div', { class: 'card pad' }, [
@@ -1105,6 +1160,7 @@ export const ADMIN_PAGE = `<!doctype html>
       say('');
       redraw();
       showDirty();
+      redrawWhy();
     }
 
     feedSel.addEventListener('change', function () {

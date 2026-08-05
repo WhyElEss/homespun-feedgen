@@ -256,15 +256,18 @@ const run = async () => {
   explain.handlers['click']()
   await settle()
   const why = textOf(app)
-  check('...answering for every feed at once',
-    why.includes('coffee') && why.includes('Radio'))
-  check('...showing the verdict per feed',
-    why.includes('matches') && why.includes('dropped'))
+  check('...answering for the feed being edited', why.includes('Coffee'))
+  check('...with its verdict', why.includes('matches'))
   check('...naming what the include matched', why.includes('matched "coffee"'))
-  check('...and the reason a feed said no',
-    why.includes('not in includeDids'))
-  check('...flagging when the DB and the filter disagree',
-    why.includes('NOT stored'))
+  check('...flagging when the DB and the filter disagree', why.includes('NOT stored'))
+  // The other feeds here are unrelated to this one, so their "no pattern
+  // matched" is noise: it must be collapsed until asked for.
+  check('other feeds are folded away', !why.includes('not in includeDids'))
+  check('...but counted', why.includes('other feeds (1)') && why.includes('none matched'))
+  const more = walk(app).find((e) => (e.textContent || '').indexOf('other feeds') >= 0)!
+  more.handlers['click']()
+  const expanded = textOf(app)
+  check('...and one click shows them', expanded.includes('not in includeDids'))
 
   console.log('\n── the new-feed wizard')
   const newBtn = walk(app).find((e) => e.textContent === '+ New feed')!
