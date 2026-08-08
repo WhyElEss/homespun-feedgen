@@ -61,6 +61,11 @@ export type FeedVerdict = {
   reason: string | null
   includeMatch: string | null
   includeTarget: string | null
+  // What the exclude pattern actually matched, and which rule it belongs to.
+  excludeMatch: string | null
+  excludeComment: string | null
+  excludeTarget: string | null
+  excludePattern: string | null
   mutedByList: boolean
   disagrees: boolean
 }
@@ -131,9 +136,15 @@ export const explainPost = async (
     const wouldIndex = verdict.matched && !mutedByList
     const stored = storedIn.has(key)
 
+    // Computed whether or not the post made it. It used to be gated on
+    // verdict.matched, so an EXCLUDED post told you nothing about how it got
+    // as far as the exclude gate — and "came in on «vinyl», then dropped by
+    // «3D»" is the whole answer, where either half alone is a riddle. When the
+    // post never matched an include, find() returns undefined and this is null,
+    // which is the honest answer to the same question.
     let includeMatch: string | null = null
     let includeTarget: string | null = null
-    if (verdict.matched && cfg.include.length > 0) {
+    if (cfg.include.length > 0) {
       const hit = cfg.include.find((x) => x.re.test(hay[x.target]))
       if (hit) {
         includeMatch = hay[hit.target].match(hit.re)?.[0] ?? null
@@ -153,6 +164,10 @@ export const explainPost = async (
         : verdict.reason ?? 'no reason given',
       includeMatch,
       includeTarget,
+      excludeMatch: verdict.excludeMatch ?? null,
+      excludeComment: verdict.excludeComment ?? null,
+      excludeTarget: verdict.excludeTarget ?? null,
+      excludePattern: verdict.excludePattern ?? null,
       mutedByList,
       disagrees: stored !== wouldIndex,
     })

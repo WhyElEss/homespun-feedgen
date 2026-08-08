@@ -95,6 +95,11 @@ export const ADMIN_PAGE = `<!doctype html>
           white-space: nowrap; }
   .pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); } .pill.bad { color: var(--bad); }
   .pill.idle { color: var(--muted); }
+  /* The word that actually fired. It is the answer to "why is my post not in
+     the feed", so it is the thing the eye should land on. */
+  code.hit { background: var(--bg); border: 1px solid var(--line);
+             border-radius: 5px; padding: .05rem .3rem; font-weight: 600;
+             color: var(--fg); }
   /* A cursor left behind by an endpoint switch: still worth showing, but it
      must not compete for attention with the one that is actually running. */
   .card.inactive { opacity: .65; }
@@ -1843,7 +1848,78 @@ export const ADMIN_PAGE = `<!doctype html>
           body.appendChild(h('p', { class: 'small muted', text: 'alt text: ' + r.alt }));
         }
 
+        // Built as nodes, not as one string, so the two things worth reading —
+        // the word that let it in and the word that threw it out — can be the
+        // two things that stand out. The old version printed the server's whole
+        // reason line, whose useful half was a truncated copy of a forty-token
+        // alternation: it named the rule that fired and not the token, which is
+        // the only part anyone can act on.
+        function targetWords(t) {
+          return t === 'text' ? 'post text'
+            : t === 'text|alt_text' ? 'text + alt text'
+            : t === 'text|alt_text|link' ? 'text, alt text and links' : t;
+        }
+        function quoted(word, where) {
+          var kids = [document.createTextNode(' ')];
+          kids.push(h('code', { class: 'hit', text: '"' + word + '"' }));
+          if (where) {
+            kids.push(document.createTextNode(' in ' + targetWords(where)));
+          }
+          return kids;
+        }
+        // Returns an array of nodes for one feed's verdict.
+        function reasonNodes(f) {
+          var out = [];
+          if (f.excludeMatch) {
+            var line = h('p', { class: 'small' }, []);
+            line.appendChild(document.createTextNode('Dropped on'));
+            quoted(f.excludeMatch, f.excludeTarget).forEach(function (n) {
+              line.appendChild(n);
+            });
+            // The comment is the identifier, because it is also what titles the
+            // block in the editor — read it here, find it there. A pattern with
+            // no comment has nothing else to be called, so it falls back to its
+            // own expression rather than leaving you to guess which of ten it was.
+            if (f.excludeComment) {
+              line.appendChild(document.createTextNode(', by the rule '));
+              line.appendChild(h('strong', { text: f.excludeComment }));
+            } else if (f.excludePattern) {
+              line.appendChild(document.createTextNode(', by the pattern '));
+              line.appendChild(h('code', { class: 'mono small',
+                                           text: '/' + f.excludePattern + '…/' }));
+            }
+            line.appendChild(document.createTextNode('.'));
+            out.push(line);
+            // How it got as far as the exclude gate. Either half alone is a
+            // riddle; together they are the whole story.
+            if (f.includeMatch) {
+              var got = h('p', { class: 'small muted' }, []);
+              got.appendChild(document.createTextNode('It had matched'));
+              quoted(f.includeMatch, f.includeTarget).forEach(function (n) {
+                got.appendChild(n);
+              });
+              got.appendChild(document.createTextNode(' on the way in.'));
+              out.push(got);
+            }
+            return out;
+          }
+          if (!f.reason && f.includeMatch) {
+            var ok = h('p', { class: 'small' }, []);
+            ok.appendChild(document.createTextNode('Matched on'));
+            quoted(f.includeMatch, f.includeTarget).forEach(function (n) {
+              ok.appendChild(n);
+            });
+            ok.appendChild(document.createTextNode('.'));
+            return [ok];
+          }
+          return [h('p', { class: 'small', text: f.reason || 'matches this feed' })];
+        }
+        // Still a plain string where a table cell needs one.
         function reasonOf(f) {
+          if (f.excludeMatch) {
+            return 'dropped on "' + f.excludeMatch + '"' +
+              (f.excludeComment ? ' — ' + f.excludeComment : '');
+          }
           return f.reason || (f.includeMatch
             ? 'matched "' + f.includeMatch + '" on ' + f.includeTarget
             : 'matches this feed');
@@ -1872,7 +1948,7 @@ export const ADMIN_PAGE = `<!doctype html>
             h('span', { class: 'small muted',
                         text: mine.stored ? 'in the database' : 'not in the database' })
           ]);
-          var kids = [head, h('p', { class: 'small', text: reasonOf(mine) })];
+          var kids = [head].concat(reasonNodes(mine));
           var note = disagreement(mine);
           if (note) kids.push(h('p', { class: 'small warn-text', text: note }));
           body.appendChild(h('div', { class: 'card pad' }, kids));

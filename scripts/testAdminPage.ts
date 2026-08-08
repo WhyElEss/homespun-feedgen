@@ -234,6 +234,21 @@ const run = async () => {
         note: 'Counted over the posts this feed already holds.',
         samples: [{ uri: 'at://1', handle: 'ann', text: 'fresh coffee', matched: 'coffee' }] } }
     }
+    else if (url === '/admin/whynot' && JSON.parse(init.body).input.includes('blocked')) {
+      // The case the whole panel exists for: a post that matched its way in and
+      // was then thrown out by one token of a forty-token alternation.
+      body = { ok: true, result: {
+        uri: 'at://did:plc:a/app.bsky.feed.post/2', did: 'did:plc:a', handle: 'ann.example',
+        createdAt: '2026-08-04T10:00:00.000Z', embed: 'none', isReply: false,
+        text: 'become a major solo artist', alt: '',
+        feeds: [
+          { key: 'coffee', displayName: 'Coffee', stored: false, wouldIndex: false,
+            reason: 'excluded by "artist" (offtopic: 3D/models/art/etc) — /\\b(?:animation|3Dprint…/ on text|alt_text|link',
+            includeMatch: 'coffee', includeTarget: 'text|alt_text',
+            excludeMatch: 'artist', excludeComment: 'offtopic: 3D/models/art/etc',
+            excludeTarget: 'text|alt_text|link', mutedByList: false, disagrees: false },
+        ] } }
+    }
     else if (url === '/admin/whynot') {
       body = { ok: true, result: {
         uri: 'at://did:plc:a/app.bsky.feed.post/1', did: 'did:plc:a', handle: 'ann.example',
@@ -663,7 +678,8 @@ const run = async () => {
   const why = textOf(app)
   check('...answering for the feed being edited', why.includes('Coffee'))
   check('...with its verdict', why.includes('matches'))
-  check('...naming what the include matched', why.includes('matched "coffee"'))
+  check('...naming what the include matched',
+    why.includes('Matched on') && why.includes('"coffee"'))
   check('...flagging when the DB and the filter disagree', why.includes('NOT stored'))
   // The other feeds here are unrelated to this one, so their "no pattern
   // matched" is noise: it must be collapsed until asked for.
@@ -673,6 +689,28 @@ const run = async () => {
   more.handlers['click']()
   const expanded = textOf(app)
   check('...and one click shows them', expanded.includes('not in includeDids'))
+
+  // The bug this panel was reported for: a dropped post said only which RULE
+  // fired, and the rule is an alternation of a hundred branches. Naming the
+  // rule without naming the branch is not an answer — you cannot act on it.
+  console.log('\n── a dropped post names the word, not just the rule')
+  whyInput.value = 'https://bsky.app/profile/ann.example/post/blocked'
+  explain.handlers['click']()
+  await settle()
+  const blocked = textOf(app)
+  check('the matched word is quoted', blocked.includes('"artist"'), blocked.slice(0, 0))
+  check('...and it is marked up, not buried in a sentence',
+    walk(app).some((e) => e.className === 'hit' && e.textContent === '"artist"'))
+  check('...the rule is named alongside it',
+    blocked.includes('offtopic: 3D/models/art/etc'))
+  check('...and where it matched', blocked.includes('text, alt text and links'))
+  // Either half alone is a riddle: it got in on one word and was thrown out on
+  // another, and both are worth knowing.
+  check('...plus how it got as far as the exclude gate',
+    blocked.includes('It had matched') && blocked.includes('"coffee"'))
+  // With a named rule there is nothing left for the expression to add, so it
+  // is not shown at all — the rule name is what finds the block in the editor.
+  check('the truncated expression is gone entirely', !blocked.includes('animation'))
 
   console.log('\n── the new-feed wizard')
   const newBtn = walk(app).find((e) => e.textContent === '+ New feed')!

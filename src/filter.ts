@@ -70,7 +70,10 @@ type RawFilters = {
   feeds?: Record<string, RawFeed>
 } & RawFeed // legacy single-feed shape, see compileLegacy()
 
-type CompiledPattern = { re: RegExp; target: Target }
+// The comment travels with the compiled pattern so a verdict can name the RULE
+// that fired ("automated reposters and tag-spam") instead of quoting the first
+// sixty characters of its expression at whoever is reading.
+type CompiledPattern = { re: RegExp; target: Target; comment?: string }
 
 export type FeedConfig = {
   key: string
@@ -113,7 +116,14 @@ const compilePattern = (
     )
   }
   try {
-    return { re: new RegExp(p.pattern, p.flags ?? 'iu'), target }
+    // g and y are stripped. Both make RegExp.test STATEFUL — it resumes from
+    // lastIndex, so the same pattern against the same text alternates between
+    // hit and miss on successive calls. The lab has always stripped them; the
+    // ingest path had not, so a config that used one would have dropped posts
+    // at random. No live config does, which is exactly why it would have been
+    // found the hard way.
+    const flags = (p.flags ?? 'iu').replace(/[gy]/g, '')
+    return { re: new RegExp(p.pattern, flags), target, comment: p.comment }
   } catch (err) {
     throw new Error(`${where}[${i}] (${p.comment ?? 'no comment'}): ${err}`)
   }
@@ -418,8 +428,25 @@ const applyToggle = (mode: ToggleMode, is: boolean): boolean => {
   return true
 }
 
-// Why a post did not land in a feed. Used by scripts/whyNot.ts.
-export type MatchVerdict = { matched: boolean; reason?: string }
+// Why a post did not land in a feed. Used by scripts/whyNot.ts and the admin
+// page's whyNot panel.
+//
+// The structured fields exist because `reason` alone was not an answer. It
+// reported the first sixty characters of the EXPRESSION that fired, and the
+// expressions here are alternations of dozens of tokens — so the verdict on a
+// dropped post read "excluded by /\b(?:animation|3Dprint\w*|3Dmodel\w*|…/",
+// which says one of forty things matched without saying which. The include
+// side had reported its matched text all along; only the exclude side did not.
+export type MatchVerdict = {
+  matched: boolean
+  reason?: string
+  excludeMatch?: string
+  excludeComment?: string
+  excludeTarget?: string
+  // Only so a caller can identify a pattern that has no comment. With one, the
+  // comment IS the identifier — it titles the block in the editor.
+  excludePattern?: string
+}
 
 export const matchesFeedVerbose = (
   cfg: FeedConfig,
@@ -455,9 +482,21 @@ export const matchesFeedVerbose = (
 
   const blocked = cfg.exclude.find((p) => p.re.test(hay[p.target]))
   if (blocked) {
+    const hit = hay[blocked.target].match(blocked.re)?.[0] ?? ''
+    const rule = blocked.comment ? ` (${blocked.comment})` : ''
     return {
       matched: false,
-      reason: `excluded by /${blocked.re.source.slice(0, 60)}…/ on ${blocked.target}`,
+      // Matched text first, because that is the answer to the question being
+      // asked. The expression stays after it: `purgePosts --rejected --reason
+      // <substring>` narrows by matching against this string, and the fragment
+      // an operator reaches for is a piece of the pattern they just edited.
+      reason:
+        `excluded by "${hit}"${rule} — ` +
+        `/${blocked.re.source.slice(0, 60)}…/ on ${blocked.target}`,
+      excludeMatch: hit,
+      excludeComment: blocked.comment,
+      excludeTarget: blocked.target,
+      excludePattern: blocked.re.source.slice(0, 60),
     }
   }
 
