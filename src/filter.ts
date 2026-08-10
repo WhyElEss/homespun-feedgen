@@ -63,6 +63,7 @@ type RawFeed = {
   gifPosts?: ToggleMode
   quotePosts?: ToggleMode
   selfLabeledPosts?: ToggleMode
+  bridgedPosts?: ToggleMode
   retention?: Retention
 }
 
@@ -86,6 +87,7 @@ export type FeedConfig = {
   gifPosts: ToggleMode
   quotePosts: ToggleMode
   selfLabeledPosts: ToggleMode
+  bridgedPosts: ToggleMode
   retention: Retention
 }
 
@@ -216,6 +218,15 @@ const compileFeed = (key: string, raw: RawFeed): FeedConfig => {
       raw.selfLabeledPosts,
       `${where}.selfLabeledPosts`,
       'exclude',
+    ),
+    // Defaults to allow, like gifPosts and quotePosts: a feed that says
+    // nothing about bridged posts keeps taking them. "exclude" drops every
+    // post federated in from the fediverse (Mastodon and the rest) by Bridgy
+    // Fed; "only" makes a feed of nothing else.
+    bridgedPosts: compileToggle(
+      raw.bridgedPosts,
+      `${where}.bridgedPosts`,
+      'allow',
     ),
     retention: compileRetention(raw.retention, where),
   }
@@ -358,6 +369,13 @@ export type MatchablePost = {
   text?: string
   reply?: unknown
   labels?: { values?: { val?: string }[] }
+  // Bridgy Fed stamps every record it creates with these two non-lexicon
+  // fields. They are the only reliable mark of a bridged post: the handle is
+  // not available to the filter at all, and even where it is, a bridge whose
+  // handle fails to resolve shows up as "handle.invalid" rather than as
+  // "<user>.<instance>.ap.brid.gy".
+  bridgyOriginalUrl?: string
+  bridgyOriginalText?: string
   facets?: { features?: { $type?: string; uri?: string }[] }[]
   embed?: {
     $type?: string
@@ -419,6 +437,16 @@ const isQuotePost = (record: MatchablePost): boolean =>
   record.embed?.$type === 'app.bsky.embed.record' ||
   record.embed?.$type === 'app.bsky.embed.recordWithMedia'
 
+// A post federated in from the fediverse by Bridgy Fed. Detected on the record
+// rather than on the author, which is what makes it reliable: the ingest never
+// sees a handle (buildHaystacks has no access to one), the account's DID is an
+// ordinary did:plc with nothing to match on, and the giveaway that IS in the
+// DID document — the PDS atproto.brid.gy — would cost a network lookup per
+// post. bridgyOriginalUrl travels inside the record itself, so this is free.
+const isBridgedPost = (record: MatchablePost): boolean =>
+  typeof record.bridgyOriginalUrl === 'string' ||
+  typeof record.bridgyOriginalText === 'string'
+
 const isSelfLabeled = (record: MatchablePost): boolean =>
   (record.labels?.values?.length ?? 0) > 0
 
@@ -464,6 +492,14 @@ export const matchesFeedVerbose = (
   }
   if (!applyToggle(cfg.quotePosts, isQuotePost(record))) {
     return { matched: false, reason: `quotePosts=${cfg.quotePosts}` }
+  }
+  if (!applyToggle(cfg.bridgedPosts, isBridgedPost(record))) {
+    return {
+      matched: false,
+      reason:
+        `bridgedPosts=${cfg.bridgedPosts}` +
+        (record.bridgyOriginalUrl ? ` (${record.bridgyOriginalUrl})` : ''),
+    }
   }
 
   // Author gate (SkyFeed "did" input block)

@@ -511,9 +511,9 @@ export const createAdminRouter = (opts: AdminRouterOptions = {}): express.Router
       res.status(403).json({
         ok: false,
         error:
-          'this box is read-only. On a standby the config is replaced by the ' +
-          'primary every 10 minutes, so an edit here would be silently undone — ' +
-          'edit on the primary instead.',
+          'this box is read-only: its config is maintained elsewhere and ' +
+          'overwritten here on a schedule, so an edit would be silently undone. ' +
+          'Edit it where it is authored.',
       })
       return
     }
@@ -566,8 +566,7 @@ export const createAdminRouter = (opts: AdminRouterOptions = {}): express.Router
         backup,
         note:
           'The service reloads within ~10s. Any change to this file also makes ' +
-          'auto-purge replay the filter over stored posts within 5 minutes, and ' +
-          'the standby picks the file up within 10.',
+          'auto-purge replay the filter over stored posts within 5 minutes.',
       })
     } catch (err: any) {
       res.status(400).json({ ok: false, error: String(err?.message ?? err) })

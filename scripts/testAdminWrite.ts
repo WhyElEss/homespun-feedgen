@@ -104,7 +104,14 @@ const run = async () => {
       body: { filters: baseConfig(), expectedDigest: got.body.digest },
     })
     check('PUT is refused', put.status === 403)
-    check('...saying why, in terms of the standby', String(put.body.error).includes('primary'))
+    // The refusal has to explain that an edit here would be UNDONE, not just
+    // that it is forbidden. Deliberately not asserted in terms of a "standby"
+    // or a "primary": the page answers for the box it is served from, and the
+    // set of boxes changes.
+    check(
+      '...saying why: the edit would be overwritten',
+      /overwritten|undone/i.test(String(put.body.error)),
+    )
     close()
   }
 

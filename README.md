@@ -152,6 +152,7 @@ Per feed:
 | `includeDids` | author allowlist — a feed of everything one or more accounts post. Works alone (no patterns needed) or together with them |
 | `excludeListUri` | optional `at://` URI of a Bluesky list; members' posts are dropped (refreshed hourly; feeds sharing a list share the fetch) |
 | `gifPosts`, `quotePosts`, `selfLabeledPosts` | `allow` \| `exclude` \| `only` |
+| `bridgedPosts` | `allow` (default) \| `exclude` \| `only` — posts federated in from the fediverse by [Bridgy Fed](https://fed.brid.gy). Detected on the record, which stamps `bridgyOriginalUrl`/`bridgyOriginalText`, **not** on the handle: the filter never sees a handle, and a bridge whose handle fails to resolve appears as `handle.invalid` rather than `<user>.<instance>.ap.brid.gy` |
 | `pinnedPost` | optional `at://` URI of a post to serve first, with the client's **Pinned** badge — see below |
 | `retention` | `{"type":"hours","value":72}` or `{"type":"count","value":500}` — how much of this feed is kept |
 | `displayName` | comment only; the name users see lives in the published record |

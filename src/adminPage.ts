@@ -699,7 +699,10 @@ export const ADMIN_PAGE = `<!doctype html>
     var writable = s.service.writable;
     var boxPill = h('span', {
       class: 'pill ' + (writable ? 'ok' : 'warn'),
-      text: writable ? 'primary — edits allowed' : 'read-only'
+      // "primary" only means something relative to a standby, and this page
+      // never talks to one: it answers for the box it is served from, whatever
+      // that box's role is today. Say what the operator can DO here.
+      text: writable ? 'edits allowed' : 'read-only'
     });
     var logout = h('button', { text: 'Sign out' });
     logout.addEventListener('click', function () {
@@ -1301,9 +1304,10 @@ export const ADMIN_PAGE = `<!doctype html>
     // confirmation was supposed to be, and it is on screen the whole time
     // rather than in the way at the last moment.
     var TOGGLE_LABEL = { selfLabeledPosts: 'Self-labelled posts',
-                         gifPosts: 'GIF posts', quotePosts: 'Quote posts' };
+                         gifPosts: 'GIF posts', quotePosts: 'Quote posts',
+                         bridgedPosts: 'Bridged posts' };
     var TOGGLE_DEFAULT = { selfLabeledPosts: 'exclude', gifPosts: 'allow',
-                           quotePosts: 'allow' };
+                           quotePosts: 'allow', bridgedPosts: 'allow' };
     function shortP(p) {
       var t = String((p && (p.comment || p.pattern)) || '(empty)');
       return t.length > 44 ? t.slice(0, 44) + '…' : t;
@@ -1881,6 +1885,15 @@ export const ADMIN_PAGE = `<!doctype html>
         [['allow', 'allow them'], ['exclude', 'remove them'], ['only', 'ONLY them']],
         function (v) { draft.quotePosts = v; }));
 
+      blocks.appendChild(selectBlock('Remove if — item is bridged from the fediverse',
+        draft.bridgedPosts || 'allow',
+        [['allow', 'allow them'], ['exclude', 'remove them'], ['only', 'ONLY them']],
+        function (v) { draft.bridgedPosts = v; },
+        'Mastodon and other fediverse accounts federated in by Bridgy Fed. ' +
+        'Matched on the record itself (bridgyOriginalUrl), never on the handle: ' +
+        'the filter never sees a handle, and a bridge whose handle fails to ' +
+        'resolve shows up as handle.invalid rather than as ap.brid.gy.'));
+
       var listUri = h('input', { type: 'text', placeholder: 'at://…/app.bsky.graph.list/…' });
       listUri.value = draft.excludeListUri || '';
       listUri.addEventListener('input', function () {
@@ -1890,8 +1903,9 @@ export const ADMIN_PAGE = `<!doctype html>
       blocks.appendChild(block('Remove — list of users', [listUri,
         h('p', { class: 'small muted', text:
           'Read from the AppView and refreshed hourly, so a newly added account ' +
-          'is not blocked immediately — and adding one never removes posts ' +
-          'already stored.' })]));
+          'is not blocked immediately. The service itself never removes posts ' +
+          'already stored — but auto-purge on the host notices the list change ' +
+          'and sweeps them within about five minutes.' })]));
 
       var pin = h('input', { type: 'text',
         placeholder: 'https://bsky.app/profile/…/post/… — or an at:// URI' });

@@ -1,7 +1,7 @@
 {
   "name": "homespun-feedgen",
   "version": "1.0.0",
-  "description": "Self-hosted Bluesky feed generator for small boxes (Raspberry Pi): Jetstream, SQLite, hot-reloadable JSON filters, Cloudflare Tunnel — with a SkyFeed migration kit",
+  "description": "Self-hosted Bluesky feed generator for small boxes (Raspberry Pi): Jetstream, SQLite, hot-reloadable JSON filters, Cloudflare Tunnel \u2014 with a SkyFeed migration kit",
   "main": "index.js",
   "repository": "git@github.com:WhyElEss/homespun-feedgen.git",
   "author": "dholms <dtholmgren@gmail.com>",
@@ -15,6 +15,7 @@
     "whyNot": "ts-node scripts/whyNot.ts",
     "purgePosts": "ts-node scripts/purgePosts.ts",
     "test:filters": "FEEDGEN_FILTERS_PATH=./filters.example.json ts-node scripts/testFilter.ts",
+    "test:bridged": "ts-node scripts/testBridged.ts",
     "repointFeed": "ts-node scripts/repointFeed.ts",
     "restoreFeed": "ts-node scripts/restoreFeed.ts",
     "setFeedAvatar": "ts-node scripts/setFeedAvatar.ts",

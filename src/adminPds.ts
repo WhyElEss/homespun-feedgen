@@ -361,7 +361,7 @@ export const checkIdentity = async (
       : feedEndpoint === expectedEndpoint
         ? 'Bluesky calls the hostname this box is configured with.'
         : 'Bluesky calls a DIFFERENT hostname than this box is configured with. ' +
-          'That is normal on a standby, and a bug anywhere else — see ' +
-          'DOMAIN-MOVE.md.',
+          'Expected while this box is not the one serving that hostname; a bug ' +
+          'if it is — see DOMAIN-MOVE.md.',
   }
 }
