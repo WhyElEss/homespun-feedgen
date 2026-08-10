@@ -15,6 +15,7 @@ import { createAdminRouter, startAdminServer } from './admin'
 import { createAdminAuth, looksLikeHash } from './adminAuth'
 import { looksLikeSecret, totpConfig } from './adminTotp'
 import { collectStatus } from './adminStatus'
+import { collectActivity } from './adminActivity'
 import { measureCandidate, probePattern } from './adminLab'
 import { explainPost } from './adminWhyNot'
 
@@ -82,6 +83,7 @@ const mountAdminUi = (
       page: true,
       writable,
       status: () => collectStatus(ctx.db, ctx.cfg, startedAt, writable),
+      activity: () => collectActivity(ctx.db),
       lab: (feed, filters, refresh) =>
         measureCandidate(ctx.db, feed, filters, { refresh }),
       whyNot: (input) => explainPost(ctx.db, input),

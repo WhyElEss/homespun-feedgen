@@ -109,6 +109,77 @@ const STATUS = {
   },
 }
 
+// The activity payload is anchored to the real clock, because the page turns
+// these UTC buckets into the reader's own local hours and a fixed fixture would
+// only line up in one time zone.
+const HOURS24 = (() => {
+  const top = Math.floor(Date.now() / 3600000) * 3600000
+  const out: string[] = []
+  for (let i = 23; i >= 0; i--) out.push(new Date(top - i * 3600000).toISOString().slice(0, 13))
+  return out
+})()
+
+// Four removed posts, ALL of them from hour 20 while the sweep itself ran in
+// hour 23. That gap is the entire point of the card — a sweep removes posts
+// from earlier hours — so the fixture must not accidentally line the two up.
+const PURGED_ROWS = [0, 1, 2, 3].map((i) => ({
+  feed: 'coffee',
+  uri: `at://did:plc:spam/app.bsky.feed.post/rk${i}`,
+  handle: 'spammer',
+  text: 'buy my thing',
+  why: 'on moderation list',
+  indexedAt: HOURS24[20] + ':1' + i + ':00.000Z',
+  kind: 'blocklist',
+})).concat([{
+  // Older than the chart. The live box produced exactly this on the first run:
+  // a sweep of three whose two oldest had arrived the previous day, so the row
+  // read -3 while one column lit up.
+  feed: 'coffee',
+  uri: 'at://did:plc:spam/app.bsky.feed.post/rkold',
+  handle: 'spammer',
+  text: 'buy my thing',
+  why: 'on moderation list',
+  indexedAt: new Date(Date.parse(HOURS24[0] + ':00:00.000Z') - 5 * 3600000).toISOString(),
+  kind: 'blocklist',
+}])
+
+const ACTIVITY = {
+  ok: true,
+  activity: {
+    generatedAt: new Date().toISOString(),
+    hours: HOURS24,
+    feeds: [
+      {
+        key: 'coffee',
+        stored: HOURS24.map((_, i) => (i === 22 ? 7 : i === 20 ? 3 : 0)),
+        purged: HOURS24.map((_, i) => (i === 20 ? 4 : 0)),
+        floor: null,
+      },
+      {
+        key: 'radio',
+        stored: HOURS24.map((_, i) => (i === 22 ? 2 : 0)),
+        purged: HOURS24.map(() => 0),
+        // Count retention that has already eaten the first ten hours shown.
+        floor: HOURS24[10] + ':00:00.000Z',
+      },
+    ],
+    events: [
+      {
+        at: HOURS24[23] + ':10:00.000Z',
+        kind: 'blocklist',
+        total: 5,
+        byFeed: [{ feed: 'coffee', count: 5 }],
+        rows: PURGED_ROWS,
+        omitted: 0,
+      },
+    ],
+    withheld: [
+      { at: HOURS24[18] + ':05:00.000Z', mode: 'rejected', count: 180, stored: 1400, limit: 25 },
+    ],
+    notes: [],
+  },
+}
+
 const FILTERS = {
   ok: true,
   digest: 'abc123abc123',
@@ -173,6 +244,9 @@ const run = async () => {
   // page with an unsaved edit is an ordinary afternoon, not an edge case.
   let unauthorized = false
   let loginAttempts = 0
+  // Flipped by the test that checks the quiet case: no purges in the window has
+  // to read as a sentence, not as a blank strip that looks broken.
+  let activityEmpty = false
   const requested: string[] = []
   const fetchStub = (url: string, init?: any) => {
     const method = init?.method ?? (init?.body ? 'POST' : 'GET')
@@ -191,6 +265,12 @@ const run = async () => {
     // were /admin/lab/measure, and the real 404 only ever showed up in a
     // browser.
     if (url === '/admin/api/status') { statusFetches++; body = STATUS }
+    else if (url === '/admin/activity') {
+      body = activityEmpty
+        ? { ok: true, activity: { ...ACTIVITY.activity, feeds: [], events: [],
+                                  withheld: [], notes: [] } }
+        : ACTIVITY
+    }
     else if (url === '/admin/filters' && method === 'GET') body = JSON.parse(JSON.stringify(FILTERS))
     else if (url === '/admin/lab/measure') {
       // Measure posts assembled() — the whole candidate config with the draft
@@ -350,6 +430,93 @@ const run = async () => {
   check('feeds are listed', all.includes('Coffee') && all.includes('Radio'))
   check('the live cursor is badged', all.includes('5s'))
   check('the stale cursor is labelled instead', all.includes('not in use'))
+
+  console.log('\n── the last 24 hours')
+  const statusPane = () => walk(app).find((e) => e.attrs.id === 'panel-status')!
+  const actCard = walk(statusPane()).find((e) => e.className.split(' ').indexOf('act') > -1)!
+  check('the card is on the Status tab', !!actCard)
+  // A stub DOM has no layout, so a bar's height — which lives in a style
+  // attribute nothing here can measure — is not a testable property. The
+  // numbers have to be readable as data or this chart is untested.
+  const colsIn = (root: El) => walk(root).filter((e) => e.attrs['data-hour'] !== undefined)
+  const cols = colsIn(actCard)
+  check('one column per hour', cols.length === 24, String(cols.length))
+  check('a bar carries its own numbers',
+    cols[22].attrs['data-stored'] === '7' && cols[22].attrs['data-purged'] === '0')
+  // The sweep ran in hour 23; these four went into hour 20, where they arrived.
+  check('removed posts go back into the hour they ARRIVED, not the hour swept',
+    cols[20].attrs['data-stored'] === '3' && cols[20].attrs['data-purged'] === '4')
+  check('...so the hour of the sweep gains nothing', cols[23].attrs['data-purged'] === '0')
+  check('the hour still filling is marked', cols[23].className.includes('partial'))
+  check('...and no completed hour is', !cols[22].className.includes('partial'))
+
+  const actText = () => textOf(walk(statusPane())
+    .find((e) => e.className.split(' ').indexOf('act') > -1)!)
+  check('the two clocks are spelled out, because the geometry cannot say it',
+    actText().includes('placed by when a post arrived') &&
+      actText().includes('placed by when a purge ran'))
+  check('the sweep is listed with its count', actText().includes('−5'))
+  check('...and what triggered it', actText().includes('blocklist'))
+  check('...naming the account nobody would have seen otherwise',
+    actText().includes('@spammer'))
+  check('...and how the post read', actText().includes('buy my thing'))
+  check('a sweep the cap refused is shown too', actText().includes('held back'))
+  check('...with what it would have taken', actText().includes('180 of 1400'))
+
+  const outLinks = find(actCard, 'a').filter((a) => (a.attrs.href || '').includes('bsky.app'))
+  check('a removed post can still be opened', outLinks.length === 5)
+  check('...without handing Bluesky the admin URL',
+    outLinks[0].attrs.rel === 'noreferrer noopener')
+
+  const sweepBtn = walk(actCard).find((e) => e.className === 'btitle')!
+  check('a sweep starts collapsed', sweepBtn.attrs['aria-expanded'] === 'false')
+  sweepBtn.handlers['click']()
+  check('...and opens', sweepBtn.attrs['aria-expanded'] === 'true')
+  check('...highlighting the hours its posts came from',
+    cols[20].className.includes('hi') && !cols[22].className.includes('hi'))
+  // Four rows off one blocklist entry share one reason, and printing it under
+  // each is the same sentence four times — the volume at which a hint stops
+  // being read, which the pattern groups already learned once.
+  check('one shared reason is stated once, not per row',
+    actText().split('All removed: on moderation list').length - 1 === 1 &&
+      actText().split('removed: on moderation list').length - 1 === 1)
+  // Otherwise the row says -5 while one column lights up, and the chart looks
+  // like it disagrees with the number next to it.
+  check('rows older than the chart are counted, not quietly dropped',
+    actText().includes('1 of these arrived before this window'))
+
+  const refreshNow = walk(app).find((e) => e.textContent === 'Refresh')!
+  refreshNow.handlers['click']()
+  await settle()
+  check('an open sweep survives a Refresh, like every other pane state',
+    walk(statusPane()).find((e) => e.className === 'btitle')!.attrs['aria-expanded'] === 'true')
+
+  const actPicker = find(app, 'select')[0]
+  actPicker.value = 'radio'
+  actPicker.handlers['change']()
+  await settle()
+  const radioCols = colsIn(statusPane())
+  check('the chart follows the feed picker', radioCols[22].attrs['data-stored'] === '2')
+  // A zero here means "retention already took it", which is a different fact
+  // from "nothing arrived" and must not be drawn as the same bar.
+  check('...marking the hours retention has already cut',
+    radioCols[5].className.includes('outside'))
+  check('...and leaving the rest alone', !radioCols[22].className.includes('outside'))
+  actPicker.value = 'coffee'
+  actPicker.handlers['change']()
+  await settle()
+  check('switching back restores the first feed',
+    colsIn(statusPane())[22].attrs['data-stored'] === '7')
+
+  activityEmpty = true
+  refreshNow.handlers['click']()
+  await settle()
+  check('a quiet day says so in words rather than showing an empty strip',
+    textOf(statusPane()).includes('No posts were removed by a purge in the last 24 hours'))
+  activityEmpty = false
+  refreshNow.handlers['click']()
+  await settle()
+  check('...and the numbers come back', colsIn(statusPane())[22].attrs['data-stored'] === '7')
 
   console.log('\n── the editor shows one feed, chosen from a dropdown above it')
   const selects = find(app, 'select')
@@ -746,6 +913,32 @@ const run = async () => {
       !css.includes('th, td, .mono'))
   check('a table keeps a floor so its container scrolls',
     css.includes('.wrap table { min-width: 30rem; }'))
+
+  // Reported from real use: on the Security card the password field sat flush
+  // against the "two-factor ON" pill — a measured 0px between two rows, which
+  // reads as one control growing out of another. `.row.wrapx` zeroed the top
+  // margin so a row OPENING a card would not push off the edge, and took it
+  // from every following row as well.
+  check('consecutive rows keep a gap between them',
+    css.includes('.row.wrapx:not(:first-child) { margin-top: .7rem; }'))
+  // Same row, second cause: input[type=text] is width:100% for the login form,
+  // so every control in that row claimed a full line and it stacked into three.
+  check('a six-digit field is six digits wide', css.includes('input.code { width: 9rem;'))
+  // Two rules both match input[type=text]; the later one wins. While they
+  // disagreed a text field was 35px beside a 39px password field and a 39px
+  // button, so any row mixing them came out stepped.
+  const cssRulesForPad = css.replace(/\/\*[\s\S]*?\*\//g, '').match(/[^{}]+\{[^}]*\}/g) || []
+  const padOf = (sel: string) => {
+    const m = cssRulesForPad.find((r) => r.trim().startsWith(sel))
+    return (m?.match(/padding:\s*([^;]+);/) || [])[1]?.trim()
+  }
+  check('text and password fields declare the same padding',
+    padOf('input[type=password], input[type=text]') === padOf('input[type=text], input[type=number]'),
+    `${padOf('input[type=password], input[type=text]')} vs ${padOf('input[type=text], input[type=number]')}`)
+  // A field is as much a touch target as a button. The 44px rule had been
+  // given to buttons alone, which left every mixed row stepped by 5px.
+  check('fields get the same touch target as the buttons beside them',
+    css.includes('input:not([type=file]), select { min-height: 44px; }'))
   // The symptom this prevents: the page is built by script after the first
   // layout, so iOS keeps a layout viewport sized to whatever JS injected and
   // lets the whole page be dragged sideways until a pinch resets it.
@@ -889,7 +1082,13 @@ const run = async () => {
   await settle()
   check('...which opens it in the editor', find(app, 'select')[0].value === 'coffee')
   check('...on the filters tab', tabBtn('Filters').attrs['aria-selected'] === 'true')
-  const out = find(statusPanel, 'a')[0]
+  // Scoped to the feed table, not to the panel. Taking the first link in the
+  // whole panel stopped meaning "the first feed" the moment a card with links
+  // of its own was added above it — the same collision that made the Lab's
+  // "Count matches" drive the wrong control once.
+  const feedTable = find(statusPanel, 'table').find((t) =>
+    find(t, 'th').some((th) => th.textContent === 'rkey'))!
+  const out = find(feedTable, 'a')[0]
   check('...and each row links to the live feed',
     (out?.attrs.href || '').indexOf('https://bsky.app/profile/did:plc:p/feed/') === 0,
     out?.attrs.href)

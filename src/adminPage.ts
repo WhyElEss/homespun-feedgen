@@ -158,7 +158,12 @@ export const ADMIN_PAGE = `<!doctype html>
     border: 1px solid var(--line); background: var(--bg); color: var(--fg);
     line-height: 1.45; resize: vertical;
   }
-  select { font-family: inherit; font-size: 16px; padding: .4rem .5rem; border-radius: 7px;
+  /* .5rem, NOT the .55rem the inputs use, and the difference is not a typo: a
+     select's content box measures 21px where an input's is 19px, so equal
+     padding gives unequal boxes. Both land on 39px, which is what matters —
+     the Lab puts an input, a select and a button on one line. Match the
+     RENDERED height, not the declaration. */
+  select { font-family: inherit; font-size: 16px; padding: .5rem .5rem; border-radius: 7px;
            border: 1px solid var(--line); background: var(--card); color: var(--fg); }
   .toolbar { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap;
              margin-top: .7rem; }
@@ -170,8 +175,13 @@ export const ADMIN_PAGE = `<!doctype html>
   .stat .lbl { color: var(--muted); font-size: .75rem; text-transform: uppercase;
                letter-spacing: .05em; }
   textarea.pat { min-height: 5.5rem; }
+  /* Same padding as the input[type=password] rule above, deliberately: both
+     rules are 0-1-1, so this one wins for text fields, and while it said
+     .45rem a text input measured 35px against a password field's 39px and a
+     button's 39px. Any row mixing them — the two-factor row mixes all three —
+     came out visibly stepped. If one of these paddings changes, change both. */
   input[type=text], input[type=number] {
-    font-family: inherit; font-size: 16px; padding: .45rem .6rem; border-radius: 7px;
+    font-family: inherit; font-size: 16px; padding: .55rem .7rem; border-radius: 7px;
     border: 1px solid var(--line); background: var(--bg); color: var(--fg);
   }
   input[type=text] { width: 100%; }
@@ -286,6 +296,17 @@ export const ADMIN_PAGE = `<!doctype html>
   .cbox { display: inline-flex; align-items: center; gap: .35rem; font-size: .85rem; }
   .cbox input { margin: 0; }
   .row.wrapx { flex-wrap: wrap; margin-top: 0; }
+  /* The margin-top: 0 above is there so a row that OPENS a card does not push
+     itself off the top edge. It was killing the gap on every other row too, so
+     two rows in a row touched: on the Security card the password field sat
+     flush against the "two-factor ON" pill with a measured 0px between them,
+     which reads as one control growing out of another. */
+  .row.wrapx:not(:first-child) { margin-top: .7rem; }
+  /* A six-digit code is six characters wide, not the width of the card.
+     input[type=text] is width: 100% for the login form, and inherited here it
+     made every control in the row claim a full line — so a row meant to read
+     as [password] [code] [button] stacked into three. */
+  input.code { width: 9rem; flex: 0 0 auto; }
   .warn-text { color: var(--warn); }
 
   /* ── fitting a phone ─────────────────────────────────────────────────────
@@ -339,6 +360,12 @@ export const ADMIN_PAGE = `<!doctype html>
        buttons rather than one setting, so they get padding instead. The × gets
        its hit area back in margin, so nothing around it moves. */
     button:not(.chip):not(.x):not(.linkish):not(.btitle) { min-height: 44px; }
+    /* Fields get the same target as the buttons they sit beside. A text field
+       is every bit as much a touch target as a button, and giving the rule to
+       buttons alone left every mixed row stepped by 5px — visible on the
+       two-factor row, where a 39px code field sits next to a 44px button.
+       textarea is excluded: it already has a min-height many times this. */
+    input:not([type=file]), select { min-height: 44px; }
     .chip { padding: .4rem .7rem; }
     /* Padding alone only got this to 33x37 — the glyph is small and the line
        height is 1. Ask for the target outright. */
@@ -362,6 +389,79 @@ export const ADMIN_PAGE = `<!doctype html>
   /* Cannot be typed into, so it cannot trigger the zoom — but spelled out
      rather than inherited, so nobody has to work that out again. */
   input[type=file] { font-family: inherit; font-size: .85rem; }
+
+  /* ── the last 24 hours ───────────────────────────────────────────────────
+     TWO SERIES ON TWO DIFFERENT CLOCKS, which is the whole difficulty here.
+     A bar is placed by when a post ARRIVED. A mark in the lane is placed by
+     when a purge RAN. A sweep at 19:10 removes posts indexed at 11:00, so a
+     mark drawn under the 19:00 bar would assert a relationship that does not
+     exist. Hence a separate lane rather than a stack, and a sentence under the
+     chart saying so outright — no arrangement of rectangles can say it. */
+  .act .cols, .act .axis, .act .lane {
+    display: grid; grid-template-columns: repeat(24, 1fr); gap: 2px;
+  }
+  .act .cols { align-items: end; }
+  .act .track { height: 5.5rem; display: flex; flex-direction: column;
+                justify-content: flex-end; background: var(--bg);
+                border-radius: 3px 3px 0 0; }
+  /* Retention has already cut these hours. An empty bar here means "removed on
+     schedule", not "nothing arrived", and drawing it as a plain zero is exactly
+     the lie this hatch exists to prevent. */
+  .act .col.outside .track {
+    background-image: repeating-linear-gradient(45deg,
+      var(--line) 0 3px, transparent 3px 6px);
+  }
+  /* The hour still filling is always short. Unlabelled, that last stub reads as
+     traffic falling off a cliff. */
+  .act .col.partial .track { border: 1px dashed var(--line); }
+  .act .col.hi .track { outline: 2px solid var(--warn); outline-offset: 1px; }
+  .act .seg { min-height: 2px; }
+  .act .seg.stored { background: var(--accent); border-radius: 2px 2px 0 0; }
+  /* Amber rather than red: a sweep you asked for is not an error. Blue against
+     amber also survives the common colour blindness, which blue against green
+     would not — and the two series must be told apart to read this at all. */
+  .act .seg.purged { background: var(--warn); border-radius: 2px 2px 0 0; }
+  .act .seg.purged + .seg.stored { border-radius: 0; }
+  .act .axis { font-size: .68rem; color: var(--muted); margin-top: .25rem;
+               font-variant-numeric: tabular-nums; }
+  .act .axis span { text-align: center; overflow: hidden; }
+  .act .lane { margin-top: .35rem; min-height: 1.1rem; align-items: center; }
+  .act .lane > div { display: flex; justify-content: center; }
+  /* An indicator, not a control. At 24 columns on a phone a mark is ~10px, and
+     a 10px control is not one — the list underneath is where the pressing
+     happens, so this never needs a touch target. */
+  .act .mark { width: 10px; height: 10px; border-radius: 3px;
+               background: var(--warn); font-size: .6rem; line-height: 10px;
+               text-align: center; color: var(--on-fill); font-weight: 700; }
+  .act .mark.withheld { background: none; border: 2px solid var(--warn); }
+  .act .mark.hi { outline: 2px solid var(--warn); outline-offset: 2px; }
+  .act .keys { display: flex; gap: .8rem; flex-wrap: wrap; font-size: .75rem;
+               color: var(--muted); margin: .1rem 0 .7rem; }
+  .act .keys span { display: flex; align-items: center; gap: .3rem; }
+  .act .sw { width: 10px; height: 10px; border-radius: 2px; flex: 0 0 auto; }
+  .act .sw.stored { background: var(--accent); }
+  .act .sw.purged { background: var(--warn); }
+  .act .sw.outside { background-image: repeating-linear-gradient(45deg,
+                       var(--line) 0 3px, transparent 3px 6px);
+                     border: 1px solid var(--line); }
+  .act .sw.partial { border: 1px dashed var(--muted); }
+  .act .clocks { margin: .6rem 0 0; }
+  .act .actlist { margin: .9rem 0 .1rem; }
+  .act .onereason { margin-bottom: .3rem; }
+  .act .sweep { border-top: 1px dashed var(--line); padding: .45rem 0 .2rem; }
+  .act .sweep:first-child { border-top: none; }
+  .act .swhead { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+  .act .swtime { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .act .swrows { margin: .4rem 0 .5rem; }
+  .act .swrows td { vertical-align: top; }
+  .act .swtext { color: var(--muted); }
+  @media (max-width: 40rem) {
+    /* 24 tracks across ~340px is 12px each. The bars survive that; the hour
+       labels do not, so they thin out rather than overlapping into mush. */
+    .act .track { height: 4.5rem; }
+    .act .cols, .act .axis, .act .lane { gap: 1px; }
+    .act .axis { font-size: .6rem; }
+  }
 </style>
 </head>
 <body>
@@ -434,6 +534,11 @@ export const ADMIN_PAGE = `<!doctype html>
     statusPane = null; editorPane = null; editor = null; reauthOpen = false;
     chromeEl = null; navEl = null; barEl = null; securityPane = null; hosts = null;
     tabButtons = {}; tabPanels = {}; activeTab = 'filters';
+    // Detached with the rest of the page. Left set, a late activity reply would
+    // paint into a node nobody can see and the next sign-in would find a stale
+    // host still holding the previous session's numbers.
+    activityHost = null; activityFeed = null; activity.data = null;
+    activity.error = null; activity.open = {};
     app.className = '';
     // The account name is checked for real now. It is still ONE account, and a
     // wrong name gives exactly the same answer as a wrong password, so it opens
@@ -612,8 +717,348 @@ export const ADMIN_PAGE = `<!doctype html>
     ]));
   }
 
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+  function zeros24() { var a = [], i; for (i = 0; i < 24; i++) a.push(0); return a; }
+  // Buckets arrive as UTC hour starts and are labelled in the reader's own
+  // zone. On an offset that is not a whole number of hours the labels land on
+  // the half hour, which is accurate rather than wrong — bucketing below the
+  // hour would be real work for a cosmetic gain.
+  function localHM(iso) {
+    var t = Date.parse(iso);
+    if (isNaN(t)) return '—';
+    var dt = new Date(t);
+    return pad2(dt.getHours()) + ':' + pad2(dt.getMinutes());
+  }
+  // at://<did>/app.bsky.feed.post/<rkey> — the author DID is in the URI, so a
+  // removed post can still be opened even though its row is gone.
+  function postLink(uri) {
+    var s = String(uri || '');
+    if (s.indexOf('at://') !== 0) return null;
+    var parts = s.slice(5).split('/');
+    if (parts.length < 3 || !parts[0] || !parts[2]) return null;
+    return 'https://bsky.app/profile/' + parts[0] + '/post/' + parts[2];
+  }
+
+  // The series to draw. One feed, or every feed summed while the picker has
+  // not reported one yet — summing is honest, it is what the box did, and it
+  // beats an empty card for the moment before the config finishes loading.
+  function activitySeries(key) {
+    var out = { stored: zeros24(), purged: zeros24(), floor: null, mixed: false };
+    var d = activity.data;
+    if (!d) return out;
+    var picked = [];
+    (d.feeds || []).forEach(function (f) {
+      if (!key || f.key === key) picked.push(f);
+    });
+    picked.forEach(function (f) {
+      for (var i = 0; i < 24; i++) {
+        out.stored[i] += (f.stored && f.stored[i]) || 0;
+        out.purged[i] += (f.purged && f.purged[i]) || 0;
+      }
+      if (f.floor) out.mixed = true;
+    });
+    // A cut belongs to one feed's window. Applied to a total of four feeds it
+    // would claim hours are missing from all of them, so the summed view says
+    // so in words instead of hatching columns it cannot speak for.
+    if (key && picked.length === 1) { out.floor = picked[0].floor; out.mixed = false; }
+    return out;
+  }
+
+  // ── what MOVED in the last 24 hours, as against what the box IS
+  //
+  // The bars are what is stored, hour by hour. Stacked on each, in amber, the
+  // posts that arrived in that hour and have since been swept — read back out
+  // of the dumps purgePosts leaves beside the database.
+  //
+  // That second series is the reason this card exists. Blocking an account on
+  // the strength of the one post you happened to see routinely removes several,
+  // and nothing said so: the rows were gone from the table and the only record
+  // was a file nobody opens. The ones you never saw were in readers' feeds the
+  // whole time, which is the part worth knowing.
+  function renderActivity() {
+    activityHost = h('div', {}, []);
+    paintActivity();
+    return activityHost;
+  }
+
+  function paintActivity() {
+    var host = activityHost;
+    if (!host) return;
+    host.innerHTML = '';
+    var card = h('div', { class: 'card pad act' }, []);
+    host.appendChild(card);
+
+    if (activity.error) {
+      card.appendChild(h('p', { class: 'err', role: 'alert',
+        text: 'Could not load activity: ' + activity.error }));
+      return;
+    }
+    var d = activity.data;
+    if (!d) {
+      card.appendChild(h('p', { class: 'small muted', text: 'Loading…' }));
+      return;
+    }
+
+    var series = activitySeries(activityFeed), i, max = 1, anyPurged = false;
+    for (i = 0; i < 24; i++) {
+      max = Math.max(max, series.stored[i] + series.purged[i]);
+      if (series.purged[i]) anyPurged = true;
+    }
+    // The first column whose hour begins before the cut, or -1. Also decides
+    // whether the legend has anything to say about retention.
+    var firstOutside = -1;
+    if (series.floor) {
+      for (i = 0; i < 24; i++) {
+        if (d.hours[i] + ':00:00.000Z' < series.floor) firstOutside = i;
+      }
+    }
+
+    // Only the keys that are actually on screen. Explaining two edge cases that
+    // are not drawn cost three wrapped rows on a phone, which is a third of the
+    // card spent on hypotheticals; on an ordinary day this is now one row.
+    var keys = [h('span', {}, [h('i', { class: 'sw stored' }),
+                               h('span', { text: 'stored' })])];
+    if (anyPurged) {
+      keys.push(h('span', {}, [h('i', { class: 'sw purged' }),
+                               h('span', { text: 'removed by a purge' })]));
+    }
+    if (firstOutside >= 0) {
+      keys.push(h('span', {}, [h('i', { class: 'sw outside' }),
+                               h('span', { text: 'outside the retention window' })]));
+    }
+    keys.push(h('span', {}, [h('i', { class: 'sw partial' }),
+                             h('span', { text: 'hour in progress' })]));
+    card.appendChild(h('div', { class: 'keys' }, keys));
+
+    var cols = h('div', { class: 'cols' }, []);
+    var axis = h('div', { class: 'axis' }, []);
+    var colEls = [];
+    for (i = 0; i < 24; i++) {
+      var iso = d.hours[i] + ':00:00.000Z';
+      var start = new Date(Date.parse(iso));
+      var st = series.stored[i], pu = series.purged[i];
+      // A column whose hour BEGINS before the cut is only partly inside the
+      // window, so its number cannot be trusted either. Marking it too beats
+      // drawing a half-hour of data at full height.
+      var outside = !!series.floor && iso < series.floor;
+      var partial = i === 23;
+      var title = pad2(start.getHours()) + ':00 — ' + st + ' stored';
+      if (pu) title += ', ' + pu + ' removed by a purge';
+      if (outside) title += ' (outside the retention window)';
+      if (partial) title += ' (hour in progress)';
+      var track = h('div', { class: 'track' }, []);
+      if (pu) track.appendChild(h('div', { class: 'seg purged',
+        style: 'height:' + Math.round(pu / max * 100) + '%' }));
+      if (st) track.appendChild(h('div', { class: 'seg stored',
+        style: 'height:' + Math.round(st / max * 100) + '%' }));
+      var col = h('div', { class: 'col' + (outside ? ' outside' : '') +
+                                  (partial ? ' partial' : ''),
+                           title: title, 'data-hour': d.hours[i],
+                           'data-stored': String(st), 'data-purged': String(pu) }, [track]);
+      colEls.push(col);
+      cols.appendChild(col);
+      axis.appendChild(h('span', {
+        text: start.getHours() % 6 === 0 ? pad2(start.getHours()) : '' }));
+    }
+
+    var events = d.events || [], withheld = d.withheld || [];
+    var hourIndex = {};
+    for (i = 0; i < 24; i++) hourIndex[d.hours[i]] = i;
+    function place(at) {
+      var j = hourIndex[String(at).slice(0, 13)];
+      return j === undefined ? -1 : j;
+    }
+    var lane = h('div', { class: 'lane' }, []), cells = [], marks = {};
+    for (i = 0; i < 24; i++) { cells.push(h('div', {}, [])); lane.appendChild(cells[i]); }
+    events.forEach(function (e) {
+      var j = place(e.at);
+      if (j < 0) return;
+      var m = h('span', { class: 'mark', title: localHM(e.at) + ' — ' + e.total +
+                                                ' post(s) removed' });
+      marks[e.at] = m;
+      cells[j].appendChild(m);
+    });
+    withheld.forEach(function (w) {
+      var j = place(w.at);
+      if (j < 0) return;
+      cells[j].appendChild(h('span', { class: 'mark withheld',
+        title: localHM(w.at) + ' — ' + w.count + ' would have gone, held back by the safety cap' }));
+    });
+
+    card.appendChild(cols);
+    card.appendChild(axis);
+    card.appendChild(lane);
+    card.appendChild(h('p', { class: 'small muted clocks', text:
+      'Bars are placed by when a post arrived. The marks under the axis are ' +
+      'placed by when a purge ran, and a sweep removes posts from earlier ' +
+      'hours — so a mark and the bar above it are not the same event.' }));
+
+    if (series.mixed && !series.floor) {
+      card.appendChild(h('p', { class: 'small muted', text:
+        'One or more of these feeds has retention reaching into this window. ' +
+        'Pick a single feed to see which hours it has already cut.' }));
+    }
+
+    function highlight(e, on) {
+      var hours = {}, j;
+      (e.rows || []).forEach(function (r) {
+        if (activityFeed && r.feed !== activityFeed) return;
+        hours[String(r.indexedAt).slice(0, 13)] = true;
+      });
+      for (j = 0; j < 24; j++) {
+        if (!hours[d.hours[j]]) continue;
+        colEls[j].className = colEls[j].className.split(' hi').join('') + (on ? ' hi' : '');
+      }
+      if (marks[e.at]) marks[e.at].className = 'mark' + (on ? ' hi' : '');
+    }
+
+    // A sweep can take posts older than the chart. Seen on the live box: one
+    // sweep removed three, of which two had arrived the previous day — so the
+    // row says -3 while a single column lights up. Counting them is the
+    // difference between "the chart disagrees with the number" and a fact.
+    function olderThanChart(e) {
+      var n = 0;
+      (e.rows || []).forEach(function (r) {
+        if (activityFeed && r.feed !== activityFeed) return;
+        if (hourIndex[String(r.indexedAt).slice(0, 13)] === undefined) n++;
+      });
+      return n;
+    }
+
+    // The bars follow the picker; this list deliberately does NOT. A blocklist
+    // entry sweeps whichever feeds the account reached, and hiding the ones you
+    // do not happen to have selected would recreate, one level up, exactly the
+    // blind spot this card was built to close. Each row names its feeds — but
+    // under a chart headed "Radio", a row reading "Coffee 4" needs the scope
+    // said out loud rather than inferred.
+    var list = h('div', {}, []);
+    if (events.length || withheld.length) {
+      card.appendChild(h('div', { class: 'gtitle actlist', text: 'Purges — all feeds' }));
+    }
+    card.appendChild(list);
+    if (!events.length && !withheld.length) {
+      // Words, not an empty strip. A blank lane reads as something broken.
+      list.appendChild(h('p', { class: 'small muted', text:
+        'No posts were removed by a purge in the last 24 hours.' }));
+    }
+
+    // A sweep the cap refused deletes nothing, so it leaves no dump — this row
+    // is the only trace of it anywhere the page can reach.
+    function renderWithheld(w) {
+      list.appendChild(h('div', { class: 'sweep' }, [
+        h('div', { class: 'swhead' }, [
+          h('span', { class: 'swtime', text: localHM(w.at) }),
+          h('span', { class: 'pill warn', text: 'held back' }),
+          h('span', { class: 'small muted', text: w.mode }),
+          h('span', { class: 'small', text: w.count + ' of ' + w.stored +
+                                            ' would have gone, cap ' + w.limit })
+        ]),
+        h('p', { class: 'small muted', text:
+          'The safety cap refused this sweep, so nothing was deleted. A valid ' +
+          'but wrong pattern is what that cap is for — check what it would ' +
+          'take before running purgePosts by hand.' })
+      ]));
+    }
+
+    // ONE list in time order, not applied-then-withheld. Rendering the two
+    // kinds as separate runs put 15:10 above 10:05 under a chart whose whole
+    // subject is when things happened.
+    var entries = [];
+    events.forEach(function (e) { entries.push({ at: e.at, ev: e }); });
+    withheld.forEach(function (w) { entries.push({ at: w.at, wh: w }); });
+    entries.sort(function (x, y) { return x.at < y.at ? 1 : x.at > y.at ? -1 : 0; });
+
+    entries.forEach(function (entry) {
+      if (entry.wh) { renderWithheld(entry.wh); return; }
+      var e = entry.ev;
+      var open = !!activity.open[e.at];
+      var body = h('div', { class: open ? '' : 'hidden' }, []);
+      var btn = h('button', { class: 'btitle', 'aria-expanded': open ? 'true' : 'false' }, [
+        h('i', { class: 'caret' }),
+        h('span', { class: 'ptitle', text: localHM(e.at) })
+      ]);
+      btn.addEventListener('click', function () {
+        var now = !activity.open[e.at];
+        activity.open[e.at] = now;
+        btn.setAttribute('aria-expanded', now ? 'true' : 'false');
+        body.className = now ? '' : 'hidden';
+        highlight(e, now);
+      });
+      var where = [];
+      (e.byFeed || []).forEach(function (f) {
+        where.push((activityNames[f.feed] || f.feed) + ' ' + f.count);
+      });
+      list.appendChild(h('div', { class: 'sweep' }, [
+        h('div', { class: 'swhead' }, [
+          btn,
+          h('span', { class: 'pill warn', text: e.kind }),
+          h('span', { class: 'swtime', text: '−' + e.total }),
+          h('span', { class: 'small muted', text: where.join(', ') })
+        ]),
+        body
+      ]));
+
+      // A blocklist sweep gives every row the same reason, so printing it under
+      // each one is the same sentence four times. State it once and the rows
+      // are just the posts — the lesson the pattern groups already learned,
+      // where one rule repeated per block was the volume at which a hint stops
+      // being read. A --rejected sweep can hit several patterns, so that case
+      // keeps its per-row reason; so does a capped list, where "all of them"
+      // would be a claim about rows that are not on screen.
+      var reasons = {};
+      (e.rows || []).forEach(function (r) { reasons[r.why] = true; });
+      var reasonKeys = [];
+      for (var rk in reasons) if (reasons.hasOwnProperty(rk)) reasonKeys.push(rk);
+      var oneReason = (!e.omitted && reasonKeys.length === 1) ? reasonKeys[0] : null;
+      if (oneReason) {
+        body.appendChild(h('div', { class: 'small muted onereason',
+          text: 'All removed: ' + oneReason }));
+      }
+      var older = olderThanChart(e);
+      if (older) {
+        body.appendChild(h('div', { class: 'small muted onereason', text:
+          older + ' of these arrived before this window, so ' +
+          (older === 1 ? 'it is' : 'they are') + ' not in the chart above.' }));
+      }
+
+      (e.rows || []).forEach(function (r) {
+        var line = h('div', { class: 'small' }, [
+          h('span', { class: 'mono', text: '@' + (r.handle || 'unknown') })
+        ]);
+        line.appendChild(document.createTextNode(' · arrived ' + localHM(r.indexedAt) +
+          (activityFeed ? '' : ' · ' + (activityNames[r.feed] || r.feed)) + ' · '));
+        var lk = postLink(r.uri);
+        if (lk) {
+          line.appendChild(h('a', { href: lk, target: '_blank',
+            rel: 'noreferrer noopener', referrerpolicy: 'no-referrer', text: 'open ↗' }));
+        }
+        body.appendChild(line);
+        if (r.text) body.appendChild(h('div', { class: 'small swtext', text: r.text }));
+        if (!oneReason) {
+          body.appendChild(h('div', { class: 'small muted', text: 'removed: ' + r.why }));
+        }
+      });
+      if (e.omitted) {
+        body.appendChild(h('p', { class: 'small warn-text', text:
+          'and ' + e.omitted + ' more not listed here — the dump holds them all.' }));
+      }
+    });
+
+    (d.notes || []).forEach(function (n) {
+      card.appendChild(h('p', { class: 'small warn-text', text: n }));
+    });
+  }
+
   function renderStatus(s, root) {
     root.innerHTML = '';
+
+    // The sweep list knows rkeys; readers know names.
+    activityNames = {};
+    (s.feeds || []).forEach(function (f) {
+      activityNames[f.key] = f.displayName || f.key;
+    });
+    root.appendChild(h('h2', { text: 'Last 24 hours' }));
+    root.appendChild(renderActivity());
 
     // ── service identity
     root.appendChild(h('h2', { text: 'Service' }));
@@ -2165,6 +2610,10 @@ export const ADMIN_PAGE = `<!doctype html>
       recordHost.appendChild(recordCard());
       showDirty();
       redrawWhy();
+      // The activity card follows the picker like the other three feed-scoped
+      // tabs. Repainted in place — the status pane it sits in is not rebuilt.
+      activityFeed = k;
+      paintActivity();
     }
 
     feedSel.addEventListener('change', function () {
@@ -2553,10 +3002,13 @@ export const ADMIN_PAGE = `<!doctype html>
 
       // Off requires both factors again: a hijacked session must not be able to
       // quietly remove the thing protecting the account.
-      var pass = h('input', { type: 'password', autocomplete: 'current-password',
+      var pass = h('input', { class: 'grow', type: 'password',
+                              autocomplete: 'current-password',
                               placeholder: 'your admin password' });
-      var code = h('input', { type: 'text', inputmode: 'numeric', maxlength: '6',
-                              placeholder: 'current 6-digit code' });
+      // Short enough to fit the field. The placeholder is this input's only
+      // label, so one that gets clipped to "current 6-di" is worse than none.
+      var code = h('input', { class: 'code', type: 'text', inputmode: 'numeric',
+                              maxlength: '6', placeholder: '6-digit code' });
       var off = h('button', { text: 'Turn two-factor off' });
       off.addEventListener('click', function () {
         if (!confirm('Turn off two-factor? The password alone will get in again.')) return;
@@ -2597,8 +3049,10 @@ export const ADMIN_PAGE = `<!doctype html>
         'Or paste this URI into the app:' }));
       body.appendChild(h('pre', { class: 'cmd', text: d.uri }));
 
-      var code = h('input', { type: 'text', inputmode: 'numeric', maxlength: '6',
-                              placeholder: '6-digit code' });
+      // Not the login form's field, which is stacked and should stay full
+      // width — this one shares a row with two buttons.
+      var code = h('input', { class: 'code', type: 'text', inputmode: 'numeric',
+                              maxlength: '6', placeholder: '6-digit code' });
       var confirm2 = h('button', { class: 'primary', text: 'Confirm and enable' });
       var cancel = h('button', { text: 'Cancel' });
       cancel.addEventListener('click', function () { totpEnrol = null; refresh(); });
@@ -2698,6 +3152,11 @@ export const ADMIN_PAGE = `<!doctype html>
   var jetstream = { readings: null, busy: false, chosen: null };
   var identity = { result: null, busy: false, error: null };
   var totpEnrol = null;
+  // Same treatment for the activity card: the payload and which sweeps are
+  // expanded outlive both a Refresh and a feed switch. activityHost is the one
+  // node it owns, so a repaint touches that and never the pane around it.
+  var activity = { data: null, error: null, open: {} };
+  var activityHost = null, activityFeed = null, activityNames = {};
 
   function touchStamp() {
     if (!stampEl || !loadedAt) return;
@@ -2792,6 +3251,25 @@ export const ADMIN_PAGE = `<!doctype html>
     showTab(activeTab);
   }
 
+  // Its own request, fired only once the status has come back. Folding it into
+  // /api/status would put a directory listing and a JSON parse of whatever is
+  // lying next to the database in the path of the page whose job is to report
+  // that the service is healthy. Held data stays on screen while this is in
+  // flight, so a Refresh never blanks the card it is refreshing.
+  function loadActivity() {
+    call('activity').then(function (r) {
+      if (r.status === 401) return;
+      return r.json().then(function (b) {
+        if (b && b.ok) { activity.data = b.activity; activity.error = null; }
+        else activity.error = (b && b.error) || 'unexpected reply';
+        paintActivity();
+      });
+    }).catch(function (e) {
+      activity.error = e.message;
+      paintActivity();
+    });
+  }
+
   function load() {
     api('status').then(function (r) {
       // Handled already: call() routes every 401 through onUnauthorized, which
@@ -2811,6 +3289,7 @@ export const ADMIN_PAGE = `<!doctype html>
         if (!editor) editor = renderConfigEditor(b.status, hosts);
         paintBar();
         touchStamp();
+        loadActivity();
       });
     }).catch(function (e) {
       if (!statusPane) {

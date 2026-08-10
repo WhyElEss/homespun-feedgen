@@ -5,6 +5,7 @@ import express from 'express'
 import { validateFilters, writeFilters } from './filter'
 import { AdminAuth } from './adminAuth'
 import { StatusSnapshot, shortDigest } from './adminStatus'
+import { ActivitySnapshot } from './adminActivity'
 import { ADMIN_PAGE } from './adminPage'
 import { resolvePostRef } from './adminResolve'
 import { probeInstances } from './adminJetstream'
@@ -70,6 +71,11 @@ export type AdminRouterOptions = {
   auth?: AdminAuth
   // When present, GET /api/status is served from it.
   status?: () => Promise<StatusSnapshot>
+  // When present, GET /activity is served from it. Deliberately NOT folded into
+  // status: this one reads the purge dumps off the disk, and a directory that
+  // is slow, huge or holding one half-written file must not be able to take the
+  // page that reports the service is healthy down with it.
+  activity?: () => Promise<ActivitySnapshot>
   // Serve the HTML page at the mount root.
   page?: boolean
   // Enables PUT /filters. False on a standby: its config is overwritten by the
@@ -465,6 +471,19 @@ export const createAdminRouter = (opts: AdminRouterOptions = {}): express.Router
     router.get('/api/status', guard, async (_req, res) => {
       try {
         res.json({ ok: true, status: await status() })
+      } catch (err: any) {
+        res.status(500).json({ ok: false, error: String(err?.message ?? err) })
+      }
+    })
+  }
+
+  // Not under /api/. Only status, login and logout live there, and a path that
+  // guesses wrong 404s with HTML that the page then fails to parse as JSON.
+  if (opts.activity) {
+    const activity = opts.activity
+    router.get('/activity', guard, async (_req, res) => {
+      try {
+        res.json({ ok: true, activity: await activity() })
       } catch (err: any) {
         res.status(500).json({ ok: false, error: String(err?.message ?? err) })
       }

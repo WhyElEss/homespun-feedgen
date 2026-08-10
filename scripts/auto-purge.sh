@@ -58,6 +58,38 @@ notify() {
 [ -d "$PROJECT" ] || { log "ERROR project dir not found: $PROJECT"; exit 1; }
 cd "$PROJECT" || exit 1
 
+# ---- keep purgePosts' database snapshots from growing without limit --------
+#
+# Every applied sweep copies the WHOLE database beside its dump, and nothing
+# ever removed those copies. By 2026-08-09 there were 38 — 24 MB against a
+# 648 KB database — and backupAll.sh was packing all of them into every nightly
+# bundle, so dailies had grown 5 -> 12 MB and the standby's 300 MB cap held
+# about three weeks instead of the two months its own comment claims.
+#
+# A snapshot is the undo for ONE sweep. It stops meaning anything once
+# retention has aged those rows out of the live database anyway, which at 72 h
+# is long before the twentieth-newest of them.
+#
+# Runs before the change detection below, not after the sweep, so a snapshot
+# left by a purgePosts run made BY HAND is cleaned up on the next tick too.
+KEEP_SNAPSHOTS="${AUTO_PURGE_KEEP_SNAPSHOTS:-20}"
+prune_snapshots() {
+  [ -d data ] || return 0
+  # Newest first; everything past the keep count goes. The case re-checks each
+  # name before deleting: this runs as root every five minutes, and the cost of
+  # being wrong about one glob is the database sitting in the same directory.
+  ls -1t data/db-backup-purge-*.sqlite 2>/dev/null \
+    | tail -n +"$((KEEP_SNAPSHOTS + 1))" \
+    | while IFS= read -r snap; do
+        case "$snap" in
+          data/db-backup-purge-*.sqlite)
+            rm -f -- "$snap" && log "pruned old snapshot ${snap#data/}"
+            ;;
+        esac
+      done
+}
+prune_snapshots || true
+
 # ---- cheap change detection, no container ----------------------------------
 
 filters_hash() { sha256sum data/filters.json 2>/dev/null | cut -d' ' -f1; }
@@ -158,6 +190,16 @@ for m in "${MODES[@]}"; do
     log "--$m: WITHHELD, would delete $COUNT of $STORED (limit $LIMIT)"
     printf '%s %s count=%s stored=%s limit=%s\n' \
       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$m" "$COUNT" "$STORED" "$LIMIT" >> "$WITHHELD"
+    # The same fact into data/, which IS mounted into the container — this file
+    # is the only way a refused sweep can reach the admin page. This script's
+    # own state directory is deliberately not mounted, and an applied sweep at
+    # least leaves a dump beside the database; a withheld one deletes nothing
+    # and so leaves nothing, which makes the most interesting thing this script
+    # ever does the one thing nobody can see afterwards.
+    printf '{"at":"%s","mode":"%s","count":%s,"stored":%s,"limit":%s}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$m" "$COUNT" "$STORED" "$LIMIT" \
+      >> data/auto-purge-withheld.jsonl \
+      || log "WARN could not append to data/auto-purge-withheld.jsonl"
     notify "withheld $m purge: $COUNT of $STORED rows, over limit $LIMIT - check manually"
     continue
   fi

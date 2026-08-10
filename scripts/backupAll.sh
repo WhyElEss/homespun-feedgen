@@ -78,6 +78,22 @@ STAMP="$(date -u +%Y-%m-%dT%H%M%SZ)"
 OUT="${1:-$HOME/backups}/feedgen-$STAMP"
 mkdir -p "$OUT/records" "$OUT/docker"
 
+# A failed run must not leave behind something that LOOKS like a bundle. The
+# pruner identifies bundles by directory name, so a half-written one would
+# occupy the retention cap while being unrestorable, and the only sign would be
+# a missing SHA256SUMS that nobody thinks to check. Observed for real: tar
+# exited 1 because the live database moved under it, `set -e` stopped the
+# script here, and the stump was left on disk.
+cleanup_partial() {
+  local code=$?
+  [ "$code" -eq 0 ] && return 0
+  if [ -d "$OUT" ] && [ ! -f "$OUT/SHA256SUMS" ]; then
+    echo "!! aborted (exit $code) — removing partial bundle $OUT" >&2
+    run_priv rm -rf -- "$OUT"
+  fi
+}
+trap cleanup_partial EXIT
+
 echo "backing up $PROJECT -> $OUT"
 echo "  service:       $SERVICE"
 echo "  publisher DID: $DID"
@@ -98,7 +114,48 @@ tar czf "$OUT/project.tar.gz" \
   -C "$PROJECT" .
 
 echo "==> data directory"
-run_priv tar czf "$OUT/data.tar.gz" -C "$PROJECT" data
+# Everything EXCEPT purgePosts' own database snapshots. Each applied sweep
+# copies the whole database beside it, and those copies are never cleaned up:
+# by 2026-08-09 there were 38 of them, 24 MB against a 648 KB database, and
+# every one was going into every nightly bundle. This bundle already carries a
+# consistent db.sqlite taken through SQLite's backup API a few lines above, so
+# the excluded files are backups of a backup — and their weight was quietly
+# eating the standby's 300 MB retention: dailies had grown 5 -> 12 MB and the
+# cap that was meant to hold two months was down to about three weeks.
+# The purged-*.json dumps stay: they are small, and the admin page reads them.
+#
+# The LIVE database and its sidecars are excluded too, and that is a fix, not a
+# saving. SQLite creates and deletes `db.sqlite-journal` constantly under an
+# ingest that never stops, so tar kept exiting 1 with "File removed before we
+# read it" — under `set -e` that aborted the whole backup. It failed on the
+# primary the first time this ran there. What was being copied was a TORN read
+# of a file the bundle already carries a consistent snapshot of, taken through
+# SQLite's backup API a few lines up, and RESTORE.md has always overwritten the
+# torn one with it. So the exclusion removes a race and a booby trap at once.
+#
+# AND tar's exit 1 is tolerated here, which is the other half of the fix.
+# tar returns 1 for "some files differ" — over a directory a running service
+# writes to, that means a journal file appeared or vanished mid-read, not that
+# the archive is unusable. 2 is a real error. Under `set -e` the 1 was aborting
+# the entire backup, and since it depends on whether the ingest happened to
+# touch data/ inside the tar window, it is a COIN FLIP: the nightly had been
+# succeeding on luck, and a night it lost would have left only a line in a log.
+# Both boxes reproduced it within minutes of each other on 2026-08-09.
+data_rc=0
+run_priv tar czf "$OUT/data.tar.gz" \
+  --exclude='data/db-backup-purge-*.sqlite' \
+  --exclude='data/db.sqlite*' \
+  -C "$PROJECT" data || data_rc=$?
+if [ "$data_rc" -gt 1 ]; then
+  echo "tar failed with status $data_rc" >&2
+  exit 1
+fi
+# The `|| true` is load-bearing under `set -e`: a bare `[ ] && echo` is the last
+# command of an and-or list, so a FALSE test would abort the backup here — the
+# same class of bug as the one being fixed three lines up.
+if [ "$data_rc" -eq 1 ]; then
+  echo "    (data/ changed while reading — normal on a live box; the database is snapshotted separately above)"
+fi
 run_priv chown "$(id -u):$(id -g)" "$OUT/data.tar.gz"
 
 echo "==> feed records"
@@ -165,10 +222,15 @@ $STATE
 \`\`\`bash
 mkdir -p ~/feedgen && cd ~/feedgen
 tar xzf project.tar.gz
-tar xzf data.tar.gz          # recreates ./data
-cp db.sqlite data/db.sqlite
+tar xzf data.tar.gz          # recreates ./data, WITHOUT the database
+cp db.sqlite data/db.sqlite  # <- not optional: the tarball has no db.sqlite
 docker compose build && docker compose up -d
 \`\`\`
+
+The live database is deliberately not inside \`data.tar.gz\`: copying it while
+the service writes to it produces a torn file, and the \`db.sqlite\` beside this
+file is a consistent snapshot taken through SQLite's own backup API. The
+per-sweep \`db-backup-purge-*.sqlite\` copies are left out for size.
 
 \`.env\` comes back with the tarball, so the tunnel and service DID work with
 no further setup.
