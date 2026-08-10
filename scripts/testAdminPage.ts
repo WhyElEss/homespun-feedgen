@@ -448,13 +448,22 @@ const run = async () => {
     cols[20].attrs['data-stored'] === '3' && cols[20].attrs['data-purged'] === '4')
   check('...so the hour of the sweep gains nothing', cols[23].attrs['data-purged'] === '0')
   check('the hour still filling is marked', cols[23].className.includes('partial'))
+  // "18:00" alone does not say whether the column covers 17-18 or 18-19 —
+  // which is exactly what got asked. A bucket is [HH:00, HH+1:00).
+  check('a column names the hour RANGE it covers, not just its start',
+    /^\d\d:00–\d\d:00 — /.test(cols[22].attrs.title || ''), cols[22].attrs.title)
   check('...and no completed hour is', !cols[22].className.includes('partial'))
 
   const actText = () => textOf(walk(statusPane())
     .find((e) => e.className.split(' ').indexOf('act') > -1)!)
-  check('the two clocks are spelled out, because the geometry cannot say it',
-    actText().includes('placed by when a post arrived') &&
-      actText().includes('placed by when a purge ran'))
+  // One clock, and it is stated. The second lane that used to carry sweep
+  // times was measured pixel-exact against the columns and STILL read as
+  // broken — a sweep at 03:40 empties the 02:00 bar, so its mark stood beside
+  // the bar it had emptied rather than above it.
+  check('the chart says which clock its bars are on',
+    actText().includes('placed by when a post arrived'))
+  check('...and there is no second lane to disagree with them',
+    !ADMIN_PAGE.includes("class: 'lane'") && !ADMIN_PAGE.includes("class: 'mark'"))
   check('the sweep is listed with its count', actText().includes('−5'))
   check('...and what triggered it', actText().includes('blocklist'))
   check('...naming the account nobody would have seen otherwise',
@@ -939,6 +948,24 @@ const run = async () => {
   // given to buttons alone, which left every mixed row stepped by 5px.
   check('fields get the same touch target as the buttons beside them',
     css.includes('input:not([type=file]), select { min-height: 44px; }'))
+
+  // A pill or a button SHOULD flip with the theme; a data series should not —
+  // the same bar changing hue because the phone went dark is a different
+  // reading of the same number. Declared once outside the media query.
+  check('the chart palette is one palette in both themes',
+    css.includes('--chart-stored: #6ea8fe;') && css.includes('--chart-removed: #f97316;'))
+  // The dark BLOCK, not everything after it: the rules further down USE these
+  // variables, and a search over the remainder of the sheet matches a use as
+  // readily as a redefinition. The first attempt did exactly that and failed.
+  const darkStart = css.indexOf('@media (prefers-color-scheme: dark)')
+  const darkBlock = css.slice(darkStart, css.indexOf('\n  }', darkStart))
+  check('...and the dark theme does not redefine it',
+    darkStart > -1 && !darkBlock.includes('--chart-stored:') &&
+      !darkBlock.includes('--chart-removed:'),
+    darkBlock.slice(0, 60))
+  check('the series use it rather than --accent/--warn',
+    css.includes('.act .seg.stored { background: var(--chart-stored);') &&
+      css.includes('.act .seg.purged { background: var(--chart-removed);'))
   // The symptom this prevents: the page is built by script after the first
   // layout, so iOS keeps a layout viewport sized to whatever JS injected and
   // lets the whole page be dragged sideways until a pinch resets it.

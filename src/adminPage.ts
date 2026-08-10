@@ -32,6 +32,17 @@ export const ADMIN_PAGE = `<!doctype html>
        4.5:1 that ordinary text needs. Dark ink on those same fills is 7.8:1
        and 8.4:1. Light theme is unchanged at 4.9:1 and 5.1:1. */
     --on-fill: #ffffff;
+    /* The chart keeps ONE palette in BOTH themes, by request. --accent and
+       --warn flip with the theme, which is right for pills and buttons and
+       wrong for a data series: the same bar should not change hue because the
+       phone went dark. These are the dark theme's blue and a single orange.
+       The cost is honest and accepted: on the light theme they measure 2.4:1
+       and 2.8:1 against the card, below the 3:1 usually asked of graphical
+       objects. They are large solid shapes, every value is also in the tooltip
+       and the list below, and blue against orange survives the common colour
+       blindness — which blue against green would not. */
+    --chart-stored: #6ea8fe;
+    --chart-removed: #f97316;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -391,13 +402,15 @@ export const ADMIN_PAGE = `<!doctype html>
   input[type=file] { font-family: inherit; font-size: .85rem; }
 
   /* ── the last 24 hours ───────────────────────────────────────────────────
-     TWO SERIES ON TWO DIFFERENT CLOCKS, which is the whole difficulty here.
-     A bar is placed by when a post ARRIVED. A mark in the lane is placed by
-     when a purge RAN. A sweep at 19:10 removes posts indexed at 11:00, so a
-     mark drawn under the 19:00 bar would assert a relationship that does not
-     exist. Hence a separate lane rather than a stack, and a sentence under the
-     chart saying so outright — no arrangement of rectangles can say it. */
-  .act .cols, .act .axis, .act .lane {
+     ONE CLOCK. Every column is an hour of ARRIVAL: the blue is what is still
+     stored from that hour, the orange on top is what a sweep has since taken
+     out of it. When a sweep ran is a different clock and is not on this chart
+     — it is the time on each row of the list below. An earlier version drew
+     those times as a second lane under the axis; it was pixel-exact against
+     the columns and still read as broken, because a sweep at 03:40 empties a
+     bar at 02:00 and its mark therefore stood next to, not above, the bar it
+     had emptied. Do not put it back. */
+  .act .cols, .act .axis {
     display: grid; grid-template-columns: repeat(24, 1fr); gap: 2px;
   }
   .act .cols { align-items: end; }
@@ -414,33 +427,21 @@ export const ADMIN_PAGE = `<!doctype html>
   /* The hour still filling is always short. Unlabelled, that last stub reads as
      traffic falling off a cliff. */
   .act .col.partial .track { border: 1px dashed var(--line); }
-  .act .col.hi .track { outline: 2px solid var(--warn); outline-offset: 1px; }
+  .act .col.hi .track { outline: 2px solid var(--chart-removed); outline-offset: 1px; }
   .act .seg { min-height: 2px; }
-  .act .seg.stored { background: var(--accent); border-radius: 2px 2px 0 0; }
-  /* Amber rather than red: a sweep you asked for is not an error. Blue against
-     amber also survives the common colour blindness, which blue against green
-     would not — and the two series must be told apart to read this at all. */
-  .act .seg.purged { background: var(--warn); border-radius: 2px 2px 0 0; }
+  .act .seg.stored { background: var(--chart-stored); border-radius: 2px 2px 0 0; }
+  /* Orange rather than red: a sweep you asked for is not an error. */
+  .act .seg.purged { background: var(--chart-removed); border-radius: 2px 2px 0 0; }
   .act .seg.purged + .seg.stored { border-radius: 0; }
   .act .axis { font-size: .68rem; color: var(--muted); margin-top: .25rem;
                font-variant-numeric: tabular-nums; }
   .act .axis span { text-align: center; overflow: hidden; }
-  .act .lane { margin-top: .35rem; min-height: 1.1rem; align-items: center; }
-  .act .lane > div { display: flex; justify-content: center; }
-  /* An indicator, not a control. At 24 columns on a phone a mark is ~10px, and
-     a 10px control is not one — the list underneath is where the pressing
-     happens, so this never needs a touch target. */
-  .act .mark { width: 10px; height: 10px; border-radius: 3px;
-               background: var(--warn); font-size: .6rem; line-height: 10px;
-               text-align: center; color: var(--on-fill); font-weight: 700; }
-  .act .mark.withheld { background: none; border: 2px solid var(--warn); }
-  .act .mark.hi { outline: 2px solid var(--warn); outline-offset: 2px; }
   .act .keys { display: flex; gap: .8rem; flex-wrap: wrap; font-size: .75rem;
                color: var(--muted); margin: .1rem 0 .7rem; }
   .act .keys span { display: flex; align-items: center; gap: .3rem; }
   .act .sw { width: 10px; height: 10px; border-radius: 2px; flex: 0 0 auto; }
-  .act .sw.stored { background: var(--accent); }
-  .act .sw.purged { background: var(--warn); }
+  .act .sw.stored { background: var(--chart-stored); }
+  .act .sw.purged { background: var(--chart-removed); }
   .act .sw.outside { background-image: repeating-linear-gradient(45deg,
                        var(--line) 0 3px, transparent 3px 6px);
                      border: 1px solid var(--line); }
@@ -459,7 +460,7 @@ export const ADMIN_PAGE = `<!doctype html>
     /* 24 tracks across ~340px is 12px each. The bars survive that; the hour
        labels do not, so they thin out rather than overlapping into mush. */
     .act .track { height: 4.5rem; }
-    .act .cols, .act .axis, .act .lane { gap: 1px; }
+    .act .cols, .act .axis { gap: 1px; }
     .act .axis { font-size: .6rem; }
   }
 </style>
@@ -842,7 +843,13 @@ export const ADMIN_PAGE = `<!doctype html>
       // drawing a half-hour of data at full height.
       var outside = !!series.floor && iso < series.floor;
       var partial = i === 23;
-      var title = pad2(start.getHours()) + ':00 — ' + st + ' stored';
+      // The RANGE, not the start. "18:00" alone does not say whether the
+      // column covers 17-18 or 18-19, and that is the first thing anyone
+      // reading this chart asks. A bucket is [HH:00, HH+1:00): 18:00:00 is in
+      // this column, 19:00:00 is in the next.
+      var endH = new Date(Date.parse(iso) + 3600000);
+      var title = pad2(start.getHours()) + ':00–' + pad2(endH.getHours()) +
+                  ':00 — ' + st + ' stored';
       if (pu) title += ', ' + pu + ' removed by a purge';
       if (outside) title += ' (outside the retention window)';
       if (partial) title += ' (hour in progress)';
@@ -864,34 +871,22 @@ export const ADMIN_PAGE = `<!doctype html>
     var events = d.events || [], withheld = d.withheld || [];
     var hourIndex = {};
     for (i = 0; i < 24; i++) hourIndex[d.hours[i]] = i;
-    function place(at) {
-      var j = hourIndex[String(at).slice(0, 13)];
-      return j === undefined ? -1 : j;
-    }
-    var lane = h('div', { class: 'lane' }, []), cells = [], marks = {};
-    for (i = 0; i < 24; i++) { cells.push(h('div', {}, [])); lane.appendChild(cells[i]); }
-    events.forEach(function (e) {
-      var j = place(e.at);
-      if (j < 0) return;
-      var m = h('span', { class: 'mark', title: localHM(e.at) + ' — ' + e.total +
-                                                ' post(s) removed' });
-      marks[e.at] = m;
-      cells[j].appendChild(m);
-    });
-    withheld.forEach(function (w) {
-      var j = place(w.at);
-      if (j < 0) return;
-      cells[j].appendChild(h('span', { class: 'mark withheld',
-        title: localHM(w.at) + ' — ' + w.count + ' would have gone, held back by the safety cap' }));
-    });
 
     card.appendChild(cols);
     card.appendChild(axis);
-    card.appendChild(lane);
+    // ONE clock on this chart. There used to be a second lane under the axis
+    // marking when each sweep RAN, and it was measured pixel-exact against the
+    // columns — but a sweep at 03:40 removes a post that arrived at 02:xx, so
+    // its mark sat one column away from the bar it had emptied and read as a
+    // misalignment. It was reported as one, by someone who had read the
+    // paragraph explaining it. A caption cannot rescue a picture that looks
+    // wrong. The lane also said nothing the rest of the card does not: the
+    // bars already show what was removed and from which hour, and each sweep's
+    // own time is in the list below.
     card.appendChild(h('p', { class: 'small muted clocks', text:
-      'Bars are placed by when a post arrived. The marks under the axis are ' +
-      'placed by when a purge ran, and a sweep removes posts from earlier ' +
-      'hours — so a mark and the bar above it are not the same event.' }));
+      'Bars are placed by when a post arrived. A sweep takes posts from ' +
+      'earlier hours, so the times below are when each sweep ran — open one ' +
+      'to light up the hours it emptied.' }));
 
     if (series.mixed && !series.floor) {
       card.appendChild(h('p', { class: 'small muted', text:
@@ -909,7 +904,6 @@ export const ADMIN_PAGE = `<!doctype html>
         if (!hours[d.hours[j]]) continue;
         colEls[j].className = colEls[j].className.split(' hi').join('') + (on ? ' hi' : '');
       }
-      if (marks[e.at]) marks[e.at].className = 'mark' + (on ? ' hi' : '');
     }
 
     // A sweep can take posts older than the chart. Seen on the live box: one
@@ -937,7 +931,7 @@ export const ADMIN_PAGE = `<!doctype html>
     }
     card.appendChild(list);
     if (!events.length && !withheld.length) {
-      // Words, not an empty strip. A blank lane reads as something broken.
+      // Words, not a blank space. Nothing at all reads as something broken.
       list.appendChild(h('p', { class: 'small muted', text:
         'No posts were removed by a purge in the last 24 hours.' }));
     }
