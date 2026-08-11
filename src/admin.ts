@@ -564,9 +564,15 @@ export const createAdminRouter = (opts: AdminRouterOptions = {}): express.Router
         ok: true,
         digest: newDigest,
         backup,
+        // Two different clocks, and putting the fast one first in a single
+        // sentence got this read as "everything happens in 10 seconds". Split
+        // by subject, and say outright that the sweep is on a clock rather
+        // than triggered by this Save — that is the part people wait for.
         note:
-          'The service reloads within ~10s. Any change to this file also makes ' +
-          'auto-purge replay the filter over stored posts within 5 minutes.',
+          'The running service picks this up within ~10 seconds and applies it ' +
+          'to arriving posts from then on. Posts ALREADY stored are swept ' +
+          'separately by auto-purge, which runs every 5 minutes on the clock ' +
+          '(:00, :05, :10 …) — saving does not trigger it.',
       })
     } catch (err: any) {
       res.status(400).json({ ok: false, error: String(err?.message ?? err) })

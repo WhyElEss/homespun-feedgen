@@ -2453,7 +2453,8 @@ export const ADMIN_PAGE = `<!doctype html>
           if (!f.disagrees) return null;
           return f.stored
             ? 'But it IS stored — the config changed after this post was seen. ' +
-              'auto-purge sweeps that within 5 minutes of a filter edit.'
+              'auto-purge sweeps that on its own 5-minute clock (:00, :05, ' +
+              ':10 …); a filter edit does not trigger it.'
             : 'But it is NOT stored — most often retention pruned it, or it ' +
               'arrived while the config was different.';
         }
