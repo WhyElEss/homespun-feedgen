@@ -70,6 +70,14 @@ const run = () => {
       'includeDids',
     ],
     [
+      // The admin page's "Remove pin" must DELETE the key, never blank it. If it
+      // ever writes '', this is the error the operator gets instead of a silent
+      // half-removal that a later reader has to interpret.
+      'an EMPTY pinnedPost is refused, not read as "no pin"',
+      { feeds: { abc: { includePatterns: [{ pattern: 'x' }], pinnedPost: '' } } },
+      'pinnedPost',
+    ],
+    [
       'pinnedPost is not a post URI',
       {
         feeds: {

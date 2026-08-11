@@ -1211,6 +1211,10 @@ export const ADMIN_PAGE = `<!doctype html>
       pickerNote,
     ]);
     var blocks = h('div', {}, []);
+    // The pinned post lives on the Lab tab but edits the same draft as the
+    // Filters tab, so it needs a host of its own that redraw() can clear —
+    // otherwise switching feeds would leave the previous feed's pin on screen.
+    var pinHost = h('div', {}, []);
     var changesCard = h('div', {}, []);
     // role=status, here and on every other .msg: this div is the whole of the
     // page's feedback — "Saved", "Valid", the error from a refused write — and
@@ -1289,6 +1293,10 @@ export const ADMIN_PAGE = `<!doctype html>
     // titled Record over a heading over a card saying the same thing three
     // times was three times too many.
     hosts.record.appendChild(recordHost);
+    // First on the tab, ahead of the two diagnostics. It is the only thing here
+    // that WRITES, and a control buried under two read-only panels is the
+    // "nobody knows it exists" failure the bridgedPosts toggle already cost us.
+    hosts.lab.appendChild(pinHost);
     renderProbe(hosts.lab);
     renderWhyNot(hosts.lab);
     renderWizard(hosts.record);
@@ -1769,6 +1777,7 @@ export const ADMIN_PAGE = `<!doctype html>
 
     function redraw() {
       blocks.innerHTML = '';
+      pinHost.innerHTML = '';
       // The hidden nodes an Undo would have restored went with it.
       undoState = null;
       paintUndo();
@@ -1912,39 +1921,90 @@ export const ADMIN_PAGE = `<!doctype html>
       pin.value = draft.pinnedPost || '';
       var pinMsg = h('div', { class: 'small muted' });
       var pinBtn = h('button', { text: 'Resolve' });
+      // Emptying the field has always un-pinned the feed, and nothing on the
+      // page ever said so — so in practice the only un-pinning anyone found was
+      // replacing the pin with a different post, or deleting the post itself.
+      // Same class as the bridgedPosts toggle that shipped without a control:
+      // a capability with no affordance is not shipped.
+      var pinClear = h('button', { text: 'Remove pin',
+                                   title: 'Take the pinned post off this feed' });
+      // What Remove took off, kept so it can go back without a Reload — which
+      // would discard every other unsaved edit on the way. Same reasoning as
+      // the undo on removing a pattern.
+      var pinRemoved = null;
+
       function applyPin(v) {
         if (v) draft.pinnedPost = v; else delete draft.pinnedPost;
       }
-      pin.addEventListener('input', function () { applyPin(pin.value.trim()); });
+      // Never textContent on this node: it carries an Undo button after a
+      // removal, and mixing the two ways of writing to it is how that button
+      // would survive in one browser and vanish in another.
+      function sayPin(nodes, bad) {
+        pinMsg.className = 'small ' + (bad ? 'warn-text' : 'muted');
+        pinMsg.innerHTML = '';
+        nodes.forEach(function (n) { pinMsg.appendChild(n); });
+      }
+      function pinText(t, bad) { sayPin([h('span', { text: t })], bad); }
+      // Visible and disabled rather than hidden while there is no pin: someone
+      // who has never un-pinned anything has to be able to see that it is
+      // possible, which is the whole reason this button exists.
+      function paintPin() {
+        var has = !!pin.value.trim();
+        pinClear.disabled = !has;
+        pinBtn.disabled = !has;
+      }
+      pin.addEventListener('input', function () {
+        pinRemoved = null;
+        applyPin(pin.value.trim());
+        paintPin();
+      });
+      pinClear.addEventListener('click', function () {
+        var was = pin.value.trim();
+        if (!was) return;
+        pinRemoved = was;
+        pin.value = '';
+        applyPin('');
+        paintPin();
+        var undo = h('button', { class: 'linkish', text: 'Undo' });
+        undo.addEventListener('click', function () {
+          if (!pinRemoved) return;
+          pin.value = pinRemoved;
+          applyPin(pinRemoved);
+          pinRemoved = null;
+          paintPin();
+          pinText('Pin restored. Nothing has been saved yet either way.');
+          showDirty();
+        });
+        sayPin([
+          h('span', { text: 'Pin removed from the draft — press Save to apply it. ' }),
+          undo,
+        ]);
+        showDirty();
+      });
       function resolvePin() {
         var v = pin.value.trim();
-        if (!v) { pinMsg.className = 'small muted'; pinMsg.textContent = ''; return; }
+        if (!v) { pinText(''); return; }
         pinBtn.disabled = true;
-        pinMsg.className = 'small muted'; pinMsg.textContent = 'Resolving…';
+        pinText('Resolving…');
         call('resolve/post', { body: { input: v } }).then(function (r) {
           return r.json().then(function (b) { return { status: r.status, body: b }; });
         }).then(function (res) {
-          pinBtn.disabled = false;
-          if (res.status !== 200) {
-            pinMsg.className = 'small warn-text'; pinMsg.textContent = res.body.error;
-            return;
-          }
+          paintPin();
+          if (res.status !== 200) { pinText(res.body.error, true); return; }
           var post = res.body.post;
-          pin.value = post.uri; applyPin(post.uri); showDirty();
+          pin.value = post.uri; applyPin(post.uri); pinRemoved = null;
+          paintPin(); showDirty();
           if (post.exists) {
-            pinMsg.className = 'small muted';
-            pinMsg.textContent = '@' + post.handle + ' — ' + post.text;
+            pinText('@' + post.handle + ' — ' + post.text);
           } else {
-            pinMsg.className = 'small warn-text';
-            pinMsg.textContent =
+            pinText(
               'That URI is well formed, but there is no such post right now. A ' +
               'pin pointing at a deleted post is dropped during hydration with ' +
-              'nothing in the log — it simply never appears.';
+              'nothing in the log — it simply never appears.', true);
           }
         }).catch(function (e) {
-          pinBtn.disabled = false;
-          pinMsg.className = 'small warn-text';
-          pinMsg.textContent = 'Network error: ' + e.message;
+          paintPin();
+          pinText('Network error: ' + e.message, true);
         });
       }
       pinBtn.addEventListener('click', resolvePin);
@@ -1953,13 +2013,18 @@ export const ADMIN_PAGE = `<!doctype html>
       pin.addEventListener('change', function () {
         if (/^https?:/i.test(pin.value.trim())) resolvePin();
       });
-      blocks.appendChild(block('Pinned post', [
-        h('div', { class: 'row wrapx' }, [pin, pinBtn]), pinMsg,
+      paintPin();
+      pinHost.appendChild(block('Pinned post', [
+        h('div', { class: 'row wrapx' }, [pin, pinBtn, pinClear]), pinMsg,
         h('p', { class: 'small muted', text:
           'Paste the link straight from the app — the handle in it is resolved to ' +
           'a DID here, because the config stores at:// URIs. Served first on page ' +
           '1 with the Pinned badge. Whether it survives un-pinning depends on ' +
-          'whether it matches this feed on its own.' })]));
+          'whether it matches this feed on its own.' }),
+        h('p', { class: 'small muted', text:
+          'This is the one control on this tab that changes the config — it is ' +
+          'part of the same draft as the Filters tab and goes out with the same ' +
+          'Save.' })]));
 
       // Three cards of read-once explanation used to sit between the exclude
       // patterns and the buttons that add one. They describe things this engine
@@ -2634,9 +2699,14 @@ export const ADMIN_PAGE = `<!doctype html>
     });
 
     // Delegated, so every field added later is covered without wiring each one.
-    // Only the filters panel: nothing on the other tabs feeds the draft.
     hosts.filters.addEventListener('input', showDirty);
     hosts.filters.addEventListener('change', showDirty);
+    // The pinned post moved to the Lab tab but still edits this draft, so its
+    // card gets the same delegation. Scoped to the card, NOT to the whole Lab
+    // panel: the probe and whyNot fields beside it are diagnostics, and typing
+    // in one of those must not report the config as unsaved.
+    pinHost.addEventListener('input', showDirty);
+    pinHost.addEventListener('change', showDirty);
 
     function load() {
       busy(true); say('Loading…');

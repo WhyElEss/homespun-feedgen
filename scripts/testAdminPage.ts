@@ -198,6 +198,10 @@ const FILTERS = {
       radio: {
         includeDids: ['did:plc:someone'],
         retention: { type: 'count', value: 500 },
+        // A pin that is already IN the config. Without one, "Remove pin" could
+        // only ever be tested against a pin added in the same session, and the
+        // branch that reports a saved pin being cleared would never run.
+        pinnedPost: 'at://did:plc:someone/app.bsky.feed.post/pinned1',
       },
       // The minimum a feed can be: no retention, no name, nothing optional.
       // Here because rendering it must not EDIT it — a default written into the
@@ -1054,6 +1058,52 @@ const run = async () => {
     pinInput.value === 'at://did:plc:mc/app.bsky.feed.post/3msc', pinInput.value)
   check('...showing whose post it is', textOf(app).includes('@mcwyrm.bsky.social'))
 
+  // It edits filters.json, so it used to sit with the other config blocks. The
+  // user asked for it on the Lab tab; what has to stay true is that it still
+  // feeds the SAME draft and goes out with the same Save.
+  console.log('\n── the pin block lives on the Lab tab')
+  check('the card is in the Lab panel',
+    textOf(panelOf('lab')).includes('Pinned post'))
+  // Not a text search: the unsaved-changes card lives on the Filters tab and
+  // legitimately says "Pinned post set" while a pin is being edited. What must
+  // have moved is the block, so look for its heading.
+  check('...and its block heading is no longer among the filter blocks',
+    !walk(panelOf('filters')).some((e) =>
+      e.className === 'blabel' && e.textContent === 'Pinned post'))
+  check('...which is what the Lab panel now carries',
+    walk(panelOf('lab')).some((e) =>
+      e.className === 'blabel' && e.textContent === 'Pinned post'))
+  check('...ahead of the two diagnostics on that tab',
+    textOf(panelOf('lab')).indexOf('Pinned post') <
+      textOf(panelOf('lab')).indexOf('Why is this post (not) in a feed?'))
+  check('...and it says the Save it belongs to is the shared one',
+    textOf(panelOf('lab')).includes('same Save'))
+
+  console.log('\n── Remove pin')
+  const removeBtn = walk(panelOf('lab')).find((e) => e.textContent === 'Remove pin')!
+  check('the button is there', !!removeBtn)
+  check('...enabled while a pin is set', !removeBtn.disabled)
+  removeBtn.handlers['click']()
+  check('...clearing the field', pinInput.value === '')
+  check('...disabling itself once there is nothing left to remove',
+    removeBtn.disabled === true)
+  check('...saying the removal is only in the draft',
+    textOf(panelOf('lab')).includes('press Save'))
+  // This feed has no pin in the saved config, so removing the one resolved a
+  // moment ago puts the draft back where it started — the summary should lose
+  // its entry, not gain a second one.
+  check('...and the unsaved-changes summary drops the pin entry',
+    !textOf(app).includes('Pinned post set'))
+
+  const undoBtn = walk(panelOf('lab')).find((e) => e.textContent === 'Undo')!
+  check('an Undo sits beside the message', !!undoBtn)
+  undoBtn.handlers['click']()
+  check('...putting the URI back',
+    pinInput.value === 'at://did:plc:mc/app.bsky.feed.post/3msc', pinInput.value)
+  check('...re-enabling Remove', !removeBtn.disabled)
+  check('...and the summary reports the pin again',
+    textOf(app).includes('Pinned post set'))
+
   console.log('\n── only the selected feed is shown')
   check('the other feed is not in the editor', !all.includes('did:plc:someone'))
   picker.value = 'radio'
@@ -1068,6 +1118,25 @@ const run = async () => {
   check('...and drops the first feed\'s patterns',
     !find(app, 'textarea').some((t) => t.value.includes('discount')))
   check('...showing its own retention unit', radio.includes('newest posts'))
+
+  // The case the button actually exists for: a pin that is in the saved config,
+  // taken off. The feed switch also proves the card is redrawn per feed rather
+  // than carrying the previous feed's pin across.
+  console.log('\n── removing a pin that was already saved')
+  const radioPin = find(panelOf('lab'), 'input').find((i) =>
+    (i.attrs.placeholder || '').indexOf('bsky.app/profile') >= 0)!
+  check('the card shows this feed\'s own pin',
+    radioPin.value === 'at://did:plc:someone/app.bsky.feed.post/pinned1',
+    radioPin.value)
+  const radioRemove = walk(panelOf('lab')).find((e) => e.textContent === 'Remove pin')!
+  radioRemove.handlers['click']()
+  check('...and removing it is reported as a change to save',
+    textOf(app).includes('Pinned post cleared'))
+  // Put it back: what this suite checks about the PUT below is the shape of the
+  // whole config, and leaving a removal armed would make that a different test.
+  walk(panelOf('lab')).find((e) => e.textContent === 'Undo')!.handlers['click']()
+  check('...and Undo takes that back too',
+    !textOf(app).includes('Pinned post cleared'))
 
   console.log('\n── saving sends the WHOLE config, not just the open feed')
   const save = walk(app).find((e) => e.tagName === 'BUTTON' && e.textContent === 'Save')!
