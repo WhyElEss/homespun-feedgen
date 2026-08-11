@@ -43,12 +43,24 @@ export const ADMIN_PAGE = `<!doctype html>
        blindness — which blue against green would not. */
     --chart-stored: #6ea8fe;
     --chart-removed: #f97316;
+    /* A separate red from --bad, and the difference is the job each one does.
+       --bad is STATUS TEXT — an error line, a "not routed" pill — read at 13px
+       against a light card, so it has to be dark: #b42318 is 6.57:1 and looks
+       brick, verging on brown, which is exactly what was reported of the one
+       button wearing it. --danger is an ACTION colour, seen as a filled shape
+       before it is read, so it takes the brightest red that still carries white
+       text: #e02d22 is 4.60:1 with #ffffff on it and sits 11 lightness points
+       above --bad. Dark theme #ff4d43 is 5.70:1 under --on-fill's dark ink and
+       4.98:1 against the card. Do not merge the two — one is legibility at
+       small sizes, the other is being seen from across the room. */
+    --danger: #e02d22;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #17181a; --fg: #e8e8e6; --muted: #9a9a97; --line: #2c2e31;
       --card: #1e2022; --accent: #6ea8fe; --ok: #4ec27f; --warn: #e0b341; --bad: #ff6b5e;
       --on-fill: #0b1220;
+      --danger: #ff4d43;
     }
   }
   * { box-sizing: border-box; }
@@ -137,12 +149,16 @@ export const ADMIN_PAGE = `<!doctype html>
   button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-fill); }
   /* Save writes a file on this box; this one writes to your repository on the
      PDS, under credentials you just typed. They were the same blue button.
-     Different weight, so the hand does not treat them as the same act — and
-     RED by request, because that write leaves the box: amber read as "mind the
-     step" where this is the danger zone. Both users of the class publish to the
-     PDS, so both are right to wear it. */
-  button.outgoing { background: none; color: var(--bad); border-color: var(--bad);
-                    font-weight: 600; }
+     RED by request, because that write leaves the box — and FILLED, because an
+     outline could not satisfy the request however bright the border got: nearly
+     all of an outline button is card colour, so it reads as a red-edged white
+     button, which is what "brownish, not bright red" was describing. The fill
+     is the only part large enough to carry the colour. Both users of the class
+     publish to the PDS, so both are right to wear it.
+     It is not a one-click hazard: a handle and an app password have to be typed
+     into the two fields above it before this button can do anything at all. */
+  button.outgoing { background: var(--danger); border-color: var(--danger);
+                    color: var(--on-fill); font-weight: 600; }
   button:disabled { opacity: .55; cursor: default; }
   /* 16px on every control, always, and NEVER via 'font: inherit'.
      iOS Safari zooms the whole page in when focus enters a control under 16px

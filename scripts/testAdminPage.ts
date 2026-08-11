@@ -1393,12 +1393,20 @@ const run = async () => {
 
   const publish = walk(app).find((e) => e.textContent === 'Publish to Bluesky')!
   // This one leaves the box: it writes to your repository on the PDS under
-  // credentials just typed, where Save only touches a file here. Red by
-  // request — amber read as "mind the step" rather than as a danger zone.
+  // credentials just typed, where Save only touches a file here. Filled red by
+  // request — an outline is mostly card colour whatever its border does, which
+  // is why the first attempt still read as brick rather than as a danger zone.
   check('the button that writes to your PDS is marked as the danger it is',
     publish.className === 'outgoing' &&
-      css.includes('button.outgoing { background: none; color: var(--bad); border-color: var(--bad);'),
+      css.includes('button.outgoing { background: var(--danger); border-color: var(--danger);') &&
+      css.includes('color: var(--on-fill); font-weight: 600; }'),
     publish.className)
+  // --danger is an action colour and --bad is status text; they are different
+  // reds on purpose, and both themes must declare the new one or the button
+  // falls back to an unstyled background in one of them.
+  check('...in a red of its own, declared in both themes',
+    css.includes('--danger: #e02d22;') && darkBlock.includes('--danger: #ff4d43;') &&
+      !css.includes('button.outgoing { background: none;'))
   publish.handlers['click']()
   await settle()
   check('publishing writes to the feed the image was chosen for',
