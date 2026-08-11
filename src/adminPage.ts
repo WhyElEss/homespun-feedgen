@@ -2014,7 +2014,14 @@ export const ADMIN_PAGE = `<!doctype html>
         if (/^https?:/i.test(pin.value.trim())) resolvePin();
       });
       paintPin();
-      pinHost.appendChild(block('Pinned post', [
+      // An h2 OUTSIDE the card, not block()'s label inside it. block() is the
+      // filter-block scaffolding — a list of interchangeable rules that collapse
+      // and carry a × — and its heading lives inside because it is part of that
+      // chrome. Every section on Lab and Status is an h2 above a plain card, and
+      // this one is a section, not a rule. It kept block() only because that is
+      // what it was wearing on the Filters tab.
+      pinHost.appendChild(h('h2', { text: 'Pinned post' }));
+      pinHost.appendChild(h('div', { class: 'card pad' }, [
         h('div', { class: 'row wrapx' }, [pin, pinBtn, pinClear]), pinMsg,
         h('p', { class: 'small muted', text:
           'Paste the link straight from the app — the handle in it is resolved to ' +

@@ -568,7 +568,7 @@ const run = async () => {
 
   console.log('\n── the blocks')
   for (const label of ['Input', 'Remove if — item has labels', 'Remove — list of users',
-                       'Pinned post', 'Always applied — no setting for these']) {
+                       'Always applied — no setting for these']) {
     check(`block: ${label}`, all.includes(label))
   }
   check('patterns are grouped under one header each',
@@ -1066,13 +1066,15 @@ const run = async () => {
     textOf(panelOf('lab')).includes('Pinned post'))
   // Not a text search: the unsaved-changes card lives on the Filters tab and
   // legitimately says "Pinned post set" while a pin is being edited. What must
-  // have moved is the block, so look for its heading.
-  check('...and its block heading is no longer among the filter blocks',
-    !walk(panelOf('filters')).some((e) =>
-      e.className === 'blabel' && e.textContent === 'Pinned post'))
-  check('...which is what the Lab panel now carries',
+  // have moved is the heading, so look for that.
+  check('...as an h2 above a card, the way every other section on Lab is built',
     walk(panelOf('lab')).some((e) =>
-      e.className === 'blabel' && e.textContent === 'Pinned post'))
+      e.tagName === 'H2' && e.textContent === 'Pinned post'))
+  check('...and NOT as a filter block, whose label sits inside the card',
+    !walk(app).some((e) => e.className === 'blabel' && e.textContent === 'Pinned post'))
+  check('...so it is gone from the filter blocks entirely',
+    !walk(panelOf('filters')).some((e) =>
+      e.tagName === 'H2' && e.textContent === 'Pinned post'))
   check('...ahead of the two diagnostics on that tab',
     textOf(panelOf('lab')).indexOf('Pinned post') <
       textOf(panelOf('lab')).indexOf('Why is this post (not) in a feed?'))
