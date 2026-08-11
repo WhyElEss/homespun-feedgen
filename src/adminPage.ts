@@ -71,7 +71,12 @@ export const ADMIN_PAGE = `<!doctype html>
   h1 { font-size: 1.1rem; margin: 0; letter-spacing: .01em; }
   h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em;
        color: var(--muted); margin: 2rem 0 .6rem; font-weight: 600; }
-  header { display: flex; align-items: baseline; gap: .75rem; flex-wrap: wrap;
+  /* center, NOT baseline: this row mixes a 1.1rem title, a .85em mono box name
+     and a pill, and a pill is a box rather than a word — its border and padding
+     sit outside the text whose baseline would be matched. On baseline the three
+     centres measured 42.89 / 44.76 / 44.70, i.e. the title rode ~2px high and
+     the oval read as lifted off the line. Centring makes all three agree. */
+  header { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
            border-bottom: 1px solid var(--line); padding-bottom: .9rem; }
   header .spacer { flex: 1; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
@@ -197,7 +202,11 @@ export const ADMIN_PAGE = `<!doctype html>
   }
   input[type=text] { width: 100%; }
   input.num { width: 6rem; }
-  .picker { display: flex; align-items: center; gap: .6rem; margin-bottom: .8rem; }
+  /* margin-top or the picker sits flush on the header's rule — measured 0px,
+     which reads as the select hanging off the border. 1rem is the gap the tabs
+     already keep below the picker, so the row sits evenly between the two. */
+  .picker { display: flex; align-items: center; gap: .6rem;
+            margin: 1rem 0 .8rem; }
   .picker label { color: var(--muted); font-size: .82rem; }
   /* min-width: 0 is the whole fix — without it a flex item refuses to shrink
      below its content, and a <select> counts its longest option as content. */

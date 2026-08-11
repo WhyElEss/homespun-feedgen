@@ -953,6 +953,21 @@ const run = async () => {
   check('fields get the same touch target as the buttons beside them',
     css.includes('input:not([type=file]), select { min-height: 44px; }'))
 
+  // Reported from a screenshot. The chrome row mixes a 1.1rem title, a .85em
+  // mono box name and a pill, and a pill is a box rather than a word: its
+  // border and padding sit outside the text a baseline would match. Measured in
+  // a browser, the three centres were 42.89 / 44.76 / 44.70 — the title ~2px
+  // high and the oval visibly lifted off the line. Centring makes them agree to
+  // 0.01px. Assert both halves: baseline coming back is the regression.
+  check('the chrome row centres its title, box name and pill',
+    css.includes('header { display: flex; align-items: center;') &&
+      !/header \{[^}]*align-items: baseline/.test(css))
+  // The picker sat flush on the header's rule — a measured 0px, which reads as
+  // the select hanging off the border rather than starting a section. 1rem is
+  // the gap the tabs already keep below it, so the row sits evenly between.
+  check('the feed picker keeps a gap below the header rule',
+    /\.picker \{[^}]*margin: 1rem 0 \.8rem;/.test(css))
+
   // A pill or a button SHOULD flip with the theme; a data series should not —
   // the same bar changing hue because the phone went dark is a different
   // reading of the same number. Declared once outside the media query.
