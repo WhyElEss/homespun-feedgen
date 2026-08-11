@@ -530,6 +530,15 @@ const run = async () => {
   refreshNow.handlers['click']()
   await settle()
   check('...and the numbers come back', colsIn(statusPane())[22].attrs['data-stored'] === '7')
+  // The mode pill wears the chart's own orange, so it must not fall back to the
+  // generic --warn pill: assert the CLASS on the row, since the colour itself
+  // lives in the stylesheet and is checked there.
+  const sweepPill = walk(statusPane()).find((e) => e.className === 'pill purged')
+  check('a sweep names its mode in the chart\'s colour',
+    !!sweepPill && sweepPill.textContent === 'blocklist', sweepPill?.textContent)
+  check('...and no sweep row is left on the generic warn pill',
+    !walk(statusPane()).some((e) => e.className === 'pill warn' &&
+      ['filter', 'blocklist', 'manual'].includes(e.textContent)))
 
   console.log('\n── the editor shows one feed, chosen from a dropdown above it')
   const selects = find(app, 'select')
@@ -985,6 +994,11 @@ const run = async () => {
   check('the series use it rather than --accent/--warn',
     css.includes('.act .seg.stored { background: var(--chart-stored);') &&
       css.includes('.act .seg.purged { background: var(--chart-removed);'))
+  // By request: the mode pill names the amber above it, so it wears the SAME
+  // orange. --warn would be a second orange for one idea, and the pill sits
+  // directly under the bars it describes.
+  check('a sweep\'s mode pill takes the chart orange, not --warn',
+    css.includes('.pill.purged { color: var(--chart-removed); }'))
   // The symptom this prevents: the page is built by script after the first
   // layout, so iOS keeps a layout viewport sized to whatever JS injected and
   // lets the whole page be dragged sideways until a pinch resets it.
@@ -1378,6 +1392,13 @@ const run = async () => {
     avatarSrc() === AVATAR, avatarSrc())
 
   const publish = walk(app).find((e) => e.textContent === 'Publish to Bluesky')!
+  // This one leaves the box: it writes to your repository on the PDS under
+  // credentials just typed, where Save only touches a file here. Red by
+  // request — amber read as "mind the step" rather than as a danger zone.
+  check('the button that writes to your PDS is marked as the danger it is',
+    publish.className === 'outgoing' &&
+      css.includes('button.outgoing { background: none; color: var(--bad); border-color: var(--bad);'),
+    publish.className)
   publish.handlers['click']()
   await settle()
   check('publishing writes to the feed the image was chosen for',

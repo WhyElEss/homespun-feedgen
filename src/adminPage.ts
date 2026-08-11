@@ -111,6 +111,15 @@ export const ADMIN_PAGE = `<!doctype html>
           white-space: nowrap; }
   .pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); } .pill.bad { color: var(--bad); }
   .pill.idle { color: var(--muted); }
+  /* The mode pill on a sweep row — "filter", "blocklist", "manual". It names
+     the thing the amber columns above it are drawn in, so by request it takes
+     the SAME orange rather than --warn, and like the chart it does not flip
+     with the theme. Measured cost, accepted deliberately: #f97316 on the light
+     card is 2.84:1 where --warn was 5.4:1, under the 4.5:1 ordinary text asks
+     for; dark theme is 5.81:1. Every one of these rows states the same fact in
+     plain text beside the pill ("blocklist" is also the row's reason), so the
+     colour is a second reading of a label that is written out anyway. */
+  .pill.purged { color: var(--chart-removed); }
   /* The word that actually fired. It is the answer to "why is my post not in
      the feed", so it is the thing the eye should land on. */
   code.hit { background: var(--bg); border: 1px solid var(--line);
@@ -128,8 +137,11 @@ export const ADMIN_PAGE = `<!doctype html>
   button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-fill); }
   /* Save writes a file on this box; this one writes to your repository on the
      PDS, under credentials you just typed. They were the same blue button.
-     Different weight, so the hand does not treat them as the same act. */
-  button.outgoing { background: none; color: var(--warn); border-color: var(--warn);
+     Different weight, so the hand does not treat them as the same act — and
+     RED by request, because that write leaves the box: amber read as "mind the
+     step" where this is the danger zone. Both users of the class publish to the
+     PDS, so both are right to wear it. */
+  button.outgoing { background: none; color: var(--bad); border-color: var(--bad);
                     font-weight: 600; }
   button:disabled { opacity: .55; cursor: default; }
   /* 16px on every control, always, and NEVER via 'font: inherit'.
@@ -997,7 +1009,9 @@ export const ADMIN_PAGE = `<!doctype html>
       list.appendChild(h('div', { class: 'sweep' }, [
         h('div', { class: 'swhead' }, [
           btn,
-          h('span', { class: 'pill warn', text: e.kind }),
+          // Same orange as the amber it names in the chart above — see
+          // .pill.purged, which is the chart's colour and not --warn.
+          h('span', { class: 'pill purged', text: e.kind }),
           h('span', { class: 'swtime', text: '−' + e.total }),
           h('span', { class: 'small muted', text: where.join(', ') })
         ]),
