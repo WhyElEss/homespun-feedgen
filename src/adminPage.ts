@@ -934,6 +934,31 @@ export const ADMIN_PAGE = `<!doctype html>
         'Pick a single feed to see which hours it has already cut.' }));
     }
 
+    // The list follows the picker, like the bars. It used to show every feed on
+    // the argument that a blocklist sweep reaches several at once and hiding
+    // that recreates a blind spot — but in practice five rows of six named a
+    // feed you were not looking at, and the argument stopped paying for itself
+    // (user, 2026-08-12). Scoping also fixed a real inconsistency: highlight()
+    // and olderThanChart() already filtered rows by feed while the rows
+    // themselves did not, so a sweep opened under one feed listed another
+    // feed's posts with nothing saying so.
+    function rowsFor(e) {
+      return (e.rows || []).filter(function (r) {
+        return !activityFeed || r.feed === activityFeed;
+      });
+    }
+    function countFor(e) {
+      var n = null;
+      if (!activityFeed) return e.total;
+      (e.byFeed || []).forEach(function (f) {
+        if (f.feed === activityFeed) n = f.count;
+      });
+      // byFeed is the authority, but never let its absence hide a sweep that
+      // demonstrably took rows from this feed.
+      if (n === null && rowsFor(e).length) n = rowsFor(e).length;
+      return n;
+    }
+
     function highlight(e, on) {
       var hours = {}, j;
       (e.rows || []).forEach(function (r) {
@@ -965,15 +990,19 @@ export const ADMIN_PAGE = `<!doctype html>
     // blind spot this card was built to close. Each row names its feeds — but
     // under a chart headed "Radio", a row reading "Coffee 4" needs the scope
     // said out loud rather than inferred.
+    // A sweep that never touched this feed has nothing to say here.
+    events = events.filter(function (e) { return countFor(e) !== null; });
     var list = h('div', {}, []);
     if (events.length || withheld.length) {
-      card.appendChild(h('div', { class: 'gtitle actlist', text: 'Purges — all feeds' }));
+      card.appendChild(h('div', { class: 'gtitle actlist', text: 'Purges — ' +
+        (activityFeed ? (activityNames[activityFeed] || activityFeed) : 'all feeds') }));
     }
     card.appendChild(list);
     if (!events.length && !withheld.length) {
       // Words, not a blank space. Nothing at all reads as something broken.
-      list.appendChild(h('p', { class: 'small muted', text:
-        'No posts were removed by a purge in the last 24 hours.' }));
+      list.appendChild(h('p', { class: 'small muted', text: activityFeed
+        ? 'Nothing was removed from this feed by a purge in the last 24 hours.'
+        : 'No posts were removed by a purge in the last 24 hours.' }));
     }
 
     // A sweep the cap refused deletes nothing, so it leaves no dump — this row
@@ -990,7 +1019,9 @@ export const ADMIN_PAGE = `<!doctype html>
         h('p', { class: 'small muted', text:
           'The safety cap refused this sweep, so nothing was deleted. A valid ' +
           'but wrong pattern is what that cap is for — check what it would ' +
-          'take before running purgePosts by hand.' })
+          'take before running purgePosts by hand. This one is listed whichever ' +
+          'feed is selected: a refused sweep deletes nothing, so there is no ' +
+          'per-feed count to scope it by.' })
       ]));
     }
 
@@ -1018,17 +1049,20 @@ export const ADMIN_PAGE = `<!doctype html>
         body.className = now ? '' : 'hidden';
         highlight(e, now);
       });
+      // Naming the feeds is what the picker already says once scoped.
       var where = [];
-      (e.byFeed || []).forEach(function (f) {
-        where.push((activityNames[f.feed] || f.feed) + ' ' + f.count);
-      });
+      if (!activityFeed) {
+        (e.byFeed || []).forEach(function (f) {
+          where.push((activityNames[f.feed] || f.feed) + ' ' + f.count);
+        });
+      }
       list.appendChild(h('div', { class: 'sweep' }, [
         h('div', { class: 'swhead' }, [
           btn,
           // Same orange as the amber it names in the chart above — see
           // .pill.purged, which is the chart's colour and not --warn.
           h('span', { class: 'pill purged', text: e.kind }),
-          h('span', { class: 'swtime', text: '−' + e.total }),
+          h('span', { class: 'swtime', text: '−' + countFor(e) }),
           h('span', { class: 'small muted', text: where.join(', ') })
         ]),
         body
@@ -1041,8 +1075,9 @@ export const ADMIN_PAGE = `<!doctype html>
       // being read. A --rejected sweep can hit several patterns, so that case
       // keeps its per-row reason; so does a capped list, where "all of them"
       // would be a claim about rows that are not on screen.
+      var scoped = rowsFor(e);
       var reasons = {};
-      (e.rows || []).forEach(function (r) { reasons[r.why] = true; });
+      scoped.forEach(function (r) { reasons[r.why] = true; });
       var reasonKeys = [];
       for (var rk in reasons) if (reasons.hasOwnProperty(rk)) reasonKeys.push(rk);
       var oneReason = (!e.omitted && reasonKeys.length === 1) ? reasonKeys[0] : null;
@@ -1057,7 +1092,7 @@ export const ADMIN_PAGE = `<!doctype html>
           (older === 1 ? 'it is' : 'they are') + ' not in the chart above.' }));
       }
 
-      (e.rows || []).forEach(function (r) {
+      scoped.forEach(function (r) {
         var line = h('div', { class: 'small' }, [
           h('span', { class: 'mono', text: '@' + (r.handle || 'unknown') })
         ]);

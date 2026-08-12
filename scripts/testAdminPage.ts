@@ -531,8 +531,12 @@ const run = async () => {
   activityEmpty = true
   refreshNow.handlers['click']()
   await settle()
+  // A feed is selected here, so the sentence is the scoped one. Asserted on the
+  // behaviour — words, naming this feed, mentioning the window — rather than on
+  // the exact string, which is the kind of check that turns a wording decision
+  // into a failing build.
   check('a quiet day says so in words rather than showing an empty strip',
-    textOf(statusPane()).includes('No posts were removed by a purge in the last 24 hours'))
+    /Nothing was removed from this feed .*last 24 hours/.test(textOf(statusPane())))
   activityEmpty = false
   refreshNow.handlers['click']()
   await settle()
