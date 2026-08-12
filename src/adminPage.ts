@@ -2368,9 +2368,9 @@ export const ADMIN_PAGE = `<!doctype html>
 
     // ── the regex reference that sits inside Try a pattern
     //
-    // The field takes a JS RegExp and nothing on the page said what \b, a bare
+    // The field takes a JS RegExp and nothing on the page said what \\b, a bare
     // word or a trailing * actually catch. Written as EXAMPLES — expression,
-    // what it takes, what it leaves — because "\b is a word boundary" is a
+    // what it takes, what it leaves — because "\\b is a word boundary" is a
     // definition, and a definition is the thing nobody can apply to the token
     // in front of them.
     //
@@ -2379,8 +2379,13 @@ export const ADMIN_PAGE = `<!doctype html>
     // right is worse than no table, because it gets believed.
     //
     // FOUR backslashes throughout: the template literal eats one pair and the
-    // browser's JS parser the other, so \\\\b reaches the screen as \b. With
+    // browser's JS parser the other, so \\\\b reaches the screen as \\b. With
     // two it arrives as U+0008 BACKSPACE and the cell shows a little box.
+    //
+    // THAT APPLIES TO THESE COMMENTS TOO. A comment is inside the literal like
+    // everything else, so a bare \\b here puts a real backspace in the served
+    // page — invisible, harmless inside a //, and exactly the kind of thing
+    // this file has a test for. Escaped above; the sentences read the same.
     function regexHelp() {
       var PIECES = [
         ['\\\\b', 'a word edge — the join between a letter, digit or _ and anything else'],
@@ -2503,7 +2508,7 @@ export const ADMIN_PAGE = `<!doctype html>
     function renderProbe(root) {
       // Four backslashes: the template literal turns them into two, and only
       // then does JS read \\b as an escaped backslash. Written with two, the
-      // page ends up with \b — the BACKSPACE character — and the field shows
+      // page ends up with \\b — the BACKSPACE character — and the field shows
       // two little boxes instead of a word boundary.
       var pat = h('input', { type: 'text', placeholder: '\\\\b(?:term|other term)\\\\b' });
       var target = h('select', {}, []);

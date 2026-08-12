@@ -1119,6 +1119,14 @@ const run = async () => {
     dirty.length === 0,
     dirty.map((e) => JSON.stringify(e.attrs.placeholder || e.textContent)).join(' '),
   )
+  // The check above walks the DOM, so it can only see what the page BUILDS.
+  // Four backspaces reached the live page anyway, all of them in COMMENTS: a
+  // comment sits inside the template literal like everything else, so a bare
+  // \b in one is an escape too. Harmless inside a //, invisible in a diff, and
+  // no reason to keep — this is the check that would have said so.
+  const ctrlLines = ADMIN_PAGE.split('\n').filter((l) => CTRL.test(l))
+  check('nor anywhere else in the page, comments included',
+    ctrlLines.length === 0, JSON.stringify(ctrlLines[0] || ''))
 
   console.log('\n── retention offers a fixed set of ages')
   const inputBlock = walk(app).find((e) => e.textContent === 'Input')!
