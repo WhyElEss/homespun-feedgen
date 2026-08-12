@@ -16,6 +16,7 @@
     "purgePosts": "ts-node scripts/purgePosts.ts",
     "test:filters": "FEEDGEN_FILTERS_PATH=./filters.example.json ts-node scripts/testFilter.ts",
     "test:bridged": "ts-node scripts/testBridged.ts",
+    "test:media": "ts-node scripts/testMedia.ts",
     "repointFeed": "ts-node scripts/repointFeed.ts",
     "restoreFeed": "ts-node scripts/restoreFeed.ts",
     "setFeedAvatar": "ts-node scripts/setFeedAvatar.ts",

@@ -1387,9 +1387,11 @@ export const ADMIN_PAGE = `<!doctype html>
     // rather than in the way at the last moment.
     var TOGGLE_LABEL = { selfLabeledPosts: 'Self-labelled posts',
                          gifPosts: 'GIF posts', quotePosts: 'Quote posts',
+                         mediaPosts: 'Posts with a picture or video',
                          bridgedPosts: 'Bridged posts' };
     var TOGGLE_DEFAULT = { selfLabeledPosts: 'exclude', gifPosts: 'allow',
-                           quotePosts: 'allow', bridgedPosts: 'allow' };
+                           quotePosts: 'allow', bridgedPosts: 'allow',
+                           mediaPosts: 'allow' };
     function shortP(p) {
       var t = String((p && (p.comment || p.pattern)) || '(empty)');
       return t.length > 44 ? t.slice(0, 44) + '…' : t;
@@ -1962,6 +1964,15 @@ export const ADMIN_PAGE = `<!doctype html>
         [['allow', 'allow them'], ['exclude', 'remove them'], ['only', 'ONLY them']],
         function (v) { draft.gifPosts = v; },
         'Tenor links and bare .gif URLs.'));
+
+      blocks.appendChild(selectBlock('Remove if — item has NO picture or video',
+        draft.mediaPosts || 'allow',
+        [['allow', 'allow them'], ['only', 'ONLY posts with one'], ['exclude', 'remove them']],
+        function (v) { draft.mediaPosts = v; },
+        'Counts an image or a video the poster attached. A link card does NOT ' +
+        'count — its thumbnail belongs to whoever the link points at, and a ' +
+        'GIF arrives the same way. Set ONLY on a feed whose subject is the ' +
+        'photograph rather than the words.'));
 
       blocks.appendChild(selectBlock('Remove if — item is a quote post',
         draft.quotePosts || 'allow',

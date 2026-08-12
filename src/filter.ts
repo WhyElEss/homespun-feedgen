@@ -61,6 +61,7 @@ type RawFeed = {
   excludeListUri?: string
   pinnedPost?: string
   gifPosts?: ToggleMode
+  mediaPosts?: ToggleMode
   quotePosts?: ToggleMode
   selfLabeledPosts?: ToggleMode
   bridgedPosts?: ToggleMode
@@ -85,6 +86,7 @@ export type FeedConfig = {
   excludeListUri?: string
   pinnedPost?: string
   gifPosts: ToggleMode
+  mediaPosts: ToggleMode
   quotePosts: ToggleMode
   selfLabeledPosts: ToggleMode
   bridgedPosts: ToggleMode
@@ -234,6 +236,10 @@ const compileFeed = (key: string, raw: RawFeed): FeedConfig => {
     excludeListUri: compileExcludeListUri(raw.excludeListUri, where),
     pinnedPost: compilePinnedPost(raw.pinnedPost, where),
     gifPosts: compileToggle(raw.gifPosts, `${where}.gifPosts`, 'allow'),
+    // Defaults to allow: a feed that says nothing about pictures keeps taking
+    // text posts. "only" makes a feed of posts that carry an image or a video
+    // of their own — which is what a feed ABOUT photographs wants.
+    mediaPosts: compileToggle(raw.mediaPosts, `${where}.mediaPosts`, 'allow'),
     quotePosts: compileToggle(raw.quotePosts, `${where}.quotePosts`, 'allow'),
     // Defaults to exclude: that is what this service has always done, and
     // letting self-labeled (adult) posts through is not a change to make
@@ -408,6 +414,7 @@ export type MatchablePost = {
     alt?: string // app.bsky.embed.video
     media?: {
       // app.bsky.embed.recordWithMedia
+      $type?: string
       external?: ExternalCard
       images?: ImageWithAlt[]
       alt?: string
@@ -455,6 +462,22 @@ const isGifPost = (record: MatchablePost): boolean => {
   const uri =
     record.embed?.external?.uri ?? record.embed?.media?.external?.uri ?? ''
   return /\.gif(?:$|\?)/i.test(uri) || /(?:^|\.)tenor\.com\//i.test(uri)
+}
+
+// Does the post carry a picture or a video of its OWN? A feed whose subject is
+// what people photograph — a view from a window, a record on a deck — is about
+// the image, and text that merely mentions the subject is not the thing.
+//
+// An external embed does NOT count, deliberately. Its thumbnail belongs to
+// whoever the link points at, not to the poster, and a Tenor GIF arrives the
+// same way — so on a feed that allows GIFs this is the difference between
+// "someone's window" and a reaction image.
+const hasMedia = (record: MatchablePost): boolean => {
+  const e = record.embed
+  if (!e) return false
+  const images = e.images ?? e.media?.images
+  if ((images?.length ?? 0) > 0) return true
+  return e.$type === 'app.bsky.embed.video' || e.media?.$type === 'app.bsky.embed.video'
 }
 
 const isQuotePost = (record: MatchablePost): boolean =>
@@ -513,6 +536,9 @@ export const matchesFeedVerbose = (
   }
   if (!applyToggle(cfg.gifPosts, isGifPost(record))) {
     return { matched: false, reason: `gifPosts=${cfg.gifPosts}` }
+  }
+  if (!applyToggle(cfg.mediaPosts, hasMedia(record))) {
+    return { matched: false, reason: `mediaPosts=${cfg.mediaPosts}` }
   }
   if (!applyToggle(cfg.quotePosts, isQuotePost(record))) {
     return { matched: false, reason: `quotePosts=${cfg.quotePosts}` }
