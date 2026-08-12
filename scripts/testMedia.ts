@@ -30,7 +30,7 @@ const plain: MatchablePost = { text }
 const emptyImages: MatchablePost = { text, embed: { $type: 'app.bsky.embed.images', images: [] } }
 
 const cases: [string, string | undefined, MatchablePost, boolean][] = [
-  // only — the shape Other People's Windows needs
+  // only — the shape a photo feed needs
   ['image', 'only', img(), true],
   ['four images', 'only', img(4), true],
   ['video', 'only', video, true],

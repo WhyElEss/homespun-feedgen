@@ -21,7 +21,8 @@ import { getFeedKeys, getFeedConfig } from './filter'
 // feeds the whole time.
 //
 // WHY 24 HOURS AND NOT SEVEN DAYS. The shortest retention window on these feeds
-// is 72 h (Vintage Obscura's count retention works out at roughly 38 h), so
+// is 72 h (a count retention of 500 works out at roughly 38 h on a busy
+// single-account feed), so
 // inside a 24 h window the hourly GC has removed nothing. The only thing that
 // takes rows out of this window is a purge, and a purge leaves a dump. So the
 // two sources are complete here and nowhere else: a seven-day chart would be

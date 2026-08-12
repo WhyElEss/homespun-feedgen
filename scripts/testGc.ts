@@ -30,7 +30,7 @@ const run = async () => {
       ).c,
     )
 
-  // ── count-based retention (Vintage Obscura: keep 500) ─────────────────
+  // ── count-based retention (a single-account feed: keep 500) ───────────
   console.log('\n── retention {type: count, value: 500}')
   const rows = Array.from({ length: 640 }, (_, i) => ({
     uri: `at://did:plc:vo/app.bsky.feed.post/p${String(i).padStart(4, '0')}`,
