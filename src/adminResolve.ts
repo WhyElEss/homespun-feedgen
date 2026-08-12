@@ -16,11 +16,25 @@ const POST_URL =
   /^https?:\/\/bsky\.app\/profile\/([^/\s]+)\/post\/([A-Za-z0-9._:~-]+)/
 const AT_URI = /^at:\/\/(did:[a-z0-9]+:[^/\s]+)\/app\.bsky\.feed\.post\/([^/\s]+)$/
 
+const LIST_URL =
+  /^https?:\/\/bsky\.app\/profile\/([^/\s]+)\/lists\/([A-Za-z0-9._:~-]+)/
+const LIST_AT_URI =
+  /^at:\/\/(did:[a-z0-9]+:[^/\s]+)\/app\.bsky\.graph\.list\/([^/\s]+)$/
+
 export type ResolvedPost = {
   uri: string
   did: string
   handle: string
   text: string
+  exists: boolean
+}
+
+export type ResolvedList = {
+  uri: string
+  did: string
+  name: string
+  purpose: string
+  count: number
   exists: boolean
 }
 
@@ -53,6 +67,54 @@ export const toAtUri = async (input: string): Promise<string> => {
   const who = decodeURIComponent(asUrl[1])
   const did = who.startsWith('did:') ? who : await resolveHandle(who)
   return `at://${did}/app.bsky.feed.post/${asUrl[2]}`
+}
+
+// The same job for a moderation list, and it exists because the failure it
+// prevents is silent. A bsky.app list link is what you have to hand; the config
+// needs at://<did>/app.bsky.graph.list/<rkey>. Pasted unconverted, nothing
+// complains — the config validates, the service starts, the log says "+ exclude
+// list", and every account on that list keeps posting into the feed. That is exactly how a
+// live feed lost its moderation list without anyone noticing.
+export const toListAtUri = async (input: string): Promise<string> => {
+  const raw = String(input ?? '').trim()
+  if (!raw) throw new Error('nothing to resolve')
+
+  const asUri = LIST_AT_URI.exec(raw)
+  if (asUri) return `at://${asUri[1]}/app.bsky.graph.list/${asUri[2]}`
+
+  const asUrl = LIST_URL.exec(raw)
+  if (!asUrl) {
+    throw new Error(
+      'paste a list link like https://bsky.app/profile/<handle>/lists/<id>, ' +
+        'or an at:// URI ending in /app.bsky.graph.list/<id>',
+    )
+  }
+  const who = decodeURIComponent(asUrl[1])
+  const did = who.startsWith('did:') ? who : await resolveHandle(who)
+  return `at://${did}/app.bsky.graph.list/${asUrl[2]}`
+}
+
+export const resolveListRef = async (input: string): Promise<ResolvedList> => {
+  const uri = await toListAtUri(input)
+  const did = uri.slice('at://'.length).split('/')[0]
+  const res = await fetch(
+    `${API}/xrpc/app.bsky.graph.getList?list=${encodeURIComponent(uri)}&limit=1`,
+  )
+  // Same stance as a pin: report, do not throw. A list the operator is about to
+  // create is a legitimate thing to save, and refusing it would be worse than
+  // saying it is not there yet.
+  if (!res.ok) {
+    return { uri, did, name: '', purpose: '', count: 0, exists: false }
+  }
+  const { list } = (await res.json()) as any
+  return {
+    uri,
+    did,
+    name: list?.name ?? '',
+    purpose: String(list?.purpose ?? '').replace(/^app\.bsky\.graph\.defs#/, ''),
+    count: Number(list?.listItemCount ?? 0),
+    exists: !!list,
+  }
 }
 
 export const resolvePostRef = async (input: string): Promise<ResolvedPost> => {

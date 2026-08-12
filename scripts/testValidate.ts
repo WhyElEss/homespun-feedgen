@@ -87,6 +87,33 @@ const run = () => {
       'pinnedPost',
     ],
     [
+      // The failure this prevents is silent: a bsky.app web link goes straight
+      // to app.bsky.graph.getList, comes back 400, and the feed has no
+      // moderation at all while the startup line still reads "+ exclude list".
+      'excludeListUri is a bsky.app web link, not an at:// URI',
+      {
+        feeds: {
+          abc: {
+            includePatterns: [{ pattern: 'x' }],
+            excludeListUri: 'https://bsky.app/profile/did:plc:aa/lists/3msv',
+          },
+        },
+      },
+      'excludeListUri',
+    ],
+    [
+      'excludeListUri points at a post collection, not a list',
+      {
+        feeds: {
+          abc: {
+            includePatterns: [{ pattern: 'x' }],
+            excludeListUri: 'at://did:plc:aa/app.bsky.feed.post/3msv',
+          },
+        },
+      },
+      'excludeListUri',
+    ],
+    [
       'unknown toggle value',
       { feeds: { abc: { includePatterns: [{ pattern: 'x' }], quotePosts: 'maybe' } } },
       'quotePosts',

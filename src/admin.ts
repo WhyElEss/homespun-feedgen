@@ -7,7 +7,7 @@ import { AdminAuth } from './adminAuth'
 import { StatusSnapshot, shortDigest } from './adminStatus'
 import { ActivitySnapshot } from './adminActivity'
 import { ADMIN_PAGE } from './adminPage'
-import { resolvePostRef } from './adminResolve'
+import { resolvePostRef, resolveListRef } from './adminResolve'
 import { probeInstances } from './adminJetstream'
 import {
   generateSecret,
@@ -584,6 +584,17 @@ export const createAdminRouter = (opts: AdminRouterOptions = {}): express.Router
   router.post('/resolve/post', guard, async (req, res) => {
     try {
       res.json({ ok: true, post: await resolvePostRef((req.body ?? {}).input) })
+    } catch (err: any) {
+      res.status(400).json({ ok: false, error: String(err?.message ?? err) })
+    }
+  })
+
+  // The same for a moderation list. Worth its own route rather than a flag on
+  // the one above: the shapes differ (post vs list rkey, text vs member count)
+  // and a caller that guessed wrong would get a confusing error, not a hint.
+  router.post('/resolve/list', guard, async (req, res) => {
+    try {
+      res.json({ ok: true, list: await resolveListRef((req.body ?? {}).input) })
     } catch (err: any) {
       res.status(400).json({ ok: false, error: String(err?.message ?? err) })
     }

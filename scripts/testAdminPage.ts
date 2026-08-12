@@ -239,6 +239,7 @@ const run = async () => {
   }
   const puts: any[] = []
   const resolved: string[] = []
+  const resolvedLists: string[] = []
   const probes: any[] = []
   const measures: any[] = []
   const published: any[] = []
@@ -356,6 +357,12 @@ const run = async () => {
       body = { ok: true, record: { uri: 'at://did:plc:p/app.bsky.feed.generator/coffee',
         cid: 'bafy', displayName: 'Coffee, published', description: 'the real one',
         avatarCid: 'bafcid', did: 'did:plc:s', createdAt: '2026-01-01T00:00:00Z' } }
+    }
+    else if (url === '/admin/resolve/list') {
+      resolvedLists.push(JSON.parse(init.body).input)
+      body = { ok: true, list: { uri: 'at://did:plc:y5/app.bsky.graph.list/3msv',
+        did: 'did:plc:y5', name: 'blocked accounts', purpose: 'curatelist',
+        count: 2, exists: true } }
     }
     else if (url === '/admin/resolve/post') {
       resolved.push(JSON.parse(init.body).input)
@@ -1075,9 +1082,22 @@ const run = async () => {
   check('...spelling the long ones out in days',
     ages!.children.some((o) => o.textContent === '72 hours (3 days)'))
 
+  console.log('\n── the moderation list can be pasted as a bsky.app link')
+  const listInput = find(app, 'input').find((i) =>
+    (i.attrs.placeholder || '').indexOf('/lists/') >= 0)!
+  check('the field asks for a link, not only a URI', !!listInput)
+  listInput.value = 'https://bsky.app/profile/stanislavski.me/lists/3msv'
+  listInput.handlers['blur']()
+  await settle()
+  check('...and blurring resolves it', resolvedLists.length === 1)
+  check('...replacing a web link with the at:// URI the config needs',
+    listInput.value === 'at://did:plc:y5/app.bsky.graph.list/3msv', listInput.value)
+  check('...naming the list and how many accounts are on it',
+    textOf(app).includes('blocked accounts') && textOf(app).includes('2 accounts'))
+
   console.log('\n── a pin can be pasted as a bsky.app link')
   const pinInput = find(app, 'input').find((i) =>
-    (i.attrs.placeholder || '').indexOf('bsky.app/profile') >= 0)!
+    (i.attrs.placeholder || '').indexOf('/post/') >= 0)!
   check('the field asks for a link, not a URI', !!pinInput)
   pinInput.value = 'https://bsky.app/profile/mcwyrm.bsky.social/post/3mscgyghtjc2f'
   pinInput.handlers['change']()

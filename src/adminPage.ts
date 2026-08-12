@@ -1942,14 +1942,61 @@ export const ADMIN_PAGE = `<!doctype html>
         'the filter never sees a handle, and a bridge whose handle fails to ' +
         'resolve shows up as handle.invalid rather than as ap.brid.gy.'));
 
-      var listUri = h('input', { type: 'text', placeholder: 'at://…/app.bsky.graph.list/…' });
+      // Resolve, like the pin below, and for a sharper reason: pasting the
+      // bsky.app list link here instead of the at:// URI fails SILENTLY. The
+      // config validates, the service starts, the log still says "+ exclude
+      // list", and nobody on the list is blocked. Checking it is one button.
+      var listUri = h('input', { type: 'text',
+        placeholder: 'https://bsky.app/profile/…/lists/… — or an at:// URI' });
       listUri.value = draft.excludeListUri || '';
+      var listMsg = h('div', { class: 'small muted' });
+      var listBtn = h('button', { text: 'Resolve' });
+      function listText(t, bad) {
+        listMsg.innerHTML = '';
+        listMsg.className = 'small ' + (bad ? 'err' : 'muted');
+        if (t) listMsg.appendChild(document.createTextNode(t));
+      }
       listUri.addEventListener('input', function () {
         if (listUri.value) draft.excludeListUri = listUri.value.trim();
         else delete draft.excludeListUri;
+        listText('');
       });
-      blocks.appendChild(block('Remove — list of users', [listUri,
+      function resolveList() {
+        var v = listUri.value.trim();
+        if (!v) { listText(''); return; }
+        listBtn.disabled = true;
+        listText('Resolving…');
+        call('resolve/list', { body: { input: v } }).then(function (r) {
+          return r.json().then(function (b) { return { status: r.status, body: b }; });
+        }).then(function (res) {
+          listBtn.disabled = false;
+          if (res.status !== 200) { listText(res.body.error, true); return; }
+          var l = res.body.list;
+          listUri.value = l.uri;
+          draft.excludeListUri = l.uri;
+          showDirty();
+          if (l.exists) {
+            listText((l.name || 'unnamed list') + ' — ' + l.count +
+                     ' account' + (l.count === 1 ? '' : 's') +
+                     (l.purpose ? ' (' + l.purpose + ')' : ''));
+          } else {
+            listText(
+              'That URI is well formed, but no such list answers right now. A ' +
+              'list that does not resolve blocks nobody, and nothing in the log ' +
+              'says so — the startup line reads "+ exclude list" either way.', true);
+          }
+        }).catch(function (e) {
+          listBtn.disabled = false;
+          listText('Network error: ' + e.message, true);
+        });
+      }
+      listBtn.addEventListener('click', resolveList);
+      listUri.addEventListener('blur', resolveList);
+      blocks.appendChild(block('Remove — list of users',
+        [h('div', { class: 'row wrapx' }, [listUri, listBtn]), listMsg,
         h('p', { class: 'small muted', text:
+          'Paste the list link from bsky.app and press Resolve — the config ' +
+          'needs an at:// URI, and a web link saved here fails silently. ' +
           'Read from the AppView and refreshed hourly, so a newly added account ' +
           'is not blocked immediately. The service itself never removes posts ' +
           'already stored — but auto-purge on the host notices the list change ' +

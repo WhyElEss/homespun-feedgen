@@ -171,6 +171,30 @@ const compilePinnedPost = (
   return value
 }
 
+// Checked for the same reason as pinnedPost, and the consequence is worse. The
+// value goes straight to app.bsky.graph.getList, so a bsky.app WEB link — the
+// thing you actually have in your clipboard — is refused by the AppView with a
+// 400 and the feed simply has no moderation. Nothing in the log says so: the
+// startup line prints "+ exclude list" for any non-empty string. This field went
+// unvalidated long enough to cost a live feed its moderation list.
+const LIST_URI_RE =
+  /^at:\/\/did:[a-z0-9]+:[^/\s]+\/app\.bsky\.graph\.list\/[^/\s]+$/
+
+const compileExcludeListUri = (
+  value: string | undefined,
+  where: string,
+): string | undefined => {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || !LIST_URI_RE.test(value)) {
+    throw new Error(
+      `${where}.excludeListUri: must be a list URI like ` +
+        `at://did:plc:xxxx/app.bsky.graph.list/yyyy — a https://bsky.app/… link ` +
+        `is not one, and would silently block nobody (got ${JSON.stringify(value)})`,
+    )
+  }
+  return value
+}
+
 const compileFeed = (key: string, raw: RawFeed): FeedConfig => {
   const where = `feeds["${key}"]`
   const includeRaw = raw.includePatterns ?? []
@@ -207,7 +231,7 @@ const compileFeed = (key: string, raw: RawFeed): FeedConfig => {
       compilePattern(p, `${where}.excludePatterns`, i, DEFAULT_EXCLUDE_TARGET),
     ),
     includeDids: new Set(didsRaw),
-    excludeListUri: raw.excludeListUri,
+    excludeListUri: compileExcludeListUri(raw.excludeListUri, where),
     pinnedPost: compilePinnedPost(raw.pinnedPost, where),
     gifPosts: compileToggle(raw.gifPosts, `${where}.gifPosts`, 'allow'),
     quotePosts: compileToggle(raw.quotePosts, `${where}.quotePosts`, 'allow'),
