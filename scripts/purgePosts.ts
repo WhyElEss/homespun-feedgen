@@ -22,6 +22,7 @@ import {
 //   yarn purgePosts --uri <bsky.app url | at-uri> [--uri ...]
 //   yarn purgePosts --rejected [--reason <substring>]
 //   yarn purgePosts --blocked
+//   yarn purgePosts --labeled [--label porn,sexual] [--src <labeler did>]
 //
 //   --feed <rkey>   limit to one feed (default: every feed in filters.json)
 //   --apply         actually delete; otherwise just print what would go
@@ -33,6 +34,17 @@ import {
 //               after tightening a pattern or dropping an include phrase
 //   --reason    narrow --rejected to verdicts whose reason contains a substring
 //               (e.g. a distinctive word from the pattern you just edited)
+//   --labeled   every post carrying a label somebody ELSE applied — a labeler
+//               service rather than the author. These cannot be filtered at
+//               ingest: a self-label travels inside the record and the firehose
+//               carries it, but a moderator label does not exist in the record
+//               at all. It is published separately by the labeler and arrives
+//               on its own schedule, so the only place to act on it is here,
+//               over posts already stored, from the AppView's hydrated view.
+//               --label narrows to specific values (default: the adult set);
+//               --src narrows to one labeler. CHOOSE THE VALUES DELIBERATELY:
+//               on a music feed the labeler flags album art, and a sweep of
+//               everything it marks takes 1970s gatefolds with it.
 //   --blocked   every post whose author is on the feed's moderation list; the
 //               list is applied at index time only, so earlier posts linger
 
@@ -115,10 +127,10 @@ const hydrate = async (
 const run = async () => {
   dotenv.config()
 
-  const modes = ['author', 'uri', 'rejected', 'blocked'].filter(has)
+  const modes = ['author', 'uri', 'rejected', 'blocked', 'labeled'].filter(has)
   if (modes.length !== 1) {
     console.error(
-      'usage: purgePosts.ts (--author <handle|did> | --uri <url> ... | --rejected [--reason <s>] | --blocked)\n' +
+      'usage: purgePosts.ts (--author <handle|did> | --uri <url> ... | --rejected [--reason <s>] | --blocked | --labeled [--label a,b] [--src <did>])\n' +
         '                    [--feed <rkey>] [--apply] [--json]',
     )
     process.exit(2)
@@ -166,6 +178,35 @@ const run = async () => {
       )
       for (const r of missing)
         doomed.push({ ...r, handle: '(deleted upstream)', text: '', why: 'not retrievable' })
+      continue
+    }
+
+    if (mode === 'labeled') {
+      // src !== the author's DID is the whole definition of "somebody else
+      // labelled this". A self-label comes back with the author as its source,
+      // and selfLabeledPosts already handles those at ingest.
+      const only = new Set(
+        (arg('label') ?? 'porn,sexual,nudity,graphic-media')
+          .split(',').map((v) => v.trim()).filter(Boolean),
+      )
+      const src = arg('src')
+      await hydrate(rows, (row, p) => {
+        const hits = (p.labels ?? []).filter(
+          (l: any) =>
+            l.src !== p.author.did &&
+            (!src || l.src === src) &&
+            (only.has('any') || only.has(l.val)),
+        )
+        if (!hits.length) return
+        doomed.push({
+          ...row,
+          handle: p.author.handle,
+          text: (p.record.text ?? '').replace(/\s+/g, ' ').slice(0, 80),
+          // Names the value AND the labeler: two labelers can disagree, and
+          // "labeled" on its own is not something an operator can act on.
+          why: `labeled ${hits.map((l: any) => l.val).join(', ')} by ${hits[0].src}`,
+        })
+      })
       continue
     }
 
