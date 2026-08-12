@@ -863,6 +863,53 @@ const run = async () => {
     probed.includes('posts touched') && probed.includes('of 100 stored'))
   check('...and what it matched in each', probed.includes('Matched'))
 
+  // The field takes a JS RegExp and nothing on the page said what \b, a bare
+  // word or a trailing * actually catch. A disclosure, so the card stays three
+  // controls and a sentence for anyone who already knows.
+  console.log('\n── the regex reference under Try a pattern')
+  const labText = textOf(panelOf('lab'))
+  check('whyNot is asked first, the probe comes after it',
+    labText.indexOf('Why is this post (not) in a feed?') <
+      labText.indexOf('Try a pattern'))
+  const rxToggle = walk(panelOf('lab')).find((e) =>
+    (e.textContent || '').includes('Regex — what each form catches'))!
+  check('the probe card offers a reference', !!rxToggle)
+  const rxBody = rxToggle.parent!.parent!.children[1]
+  check('...shut to start with',
+    rxToggle.attrs['aria-expanded'] === 'false' && rxBody.className === 'hidden')
+  rxToggle.handlers['click']()
+  check('...opening on one click',
+    rxToggle.attrs['aria-expanded'] === 'true' && rxBody.className === '')
+  const rx = textOf(rxBody)
+  // Examples, not definitions. "\b is a word boundary" is exactly the sentence
+  // that cannot be applied to the token in front of you.
+  //
+  // Matched as whole CELLS, not as substrings of the panel: every expression
+  // here is discussed again in the notes below the tables, so a check on the
+  // panel text alone went on passing with the examples deleted — and the
+  // examples are the half that was asked for.
+  const rxCells = walk(rxBody).map((e) => e.textContent)
+  check('...answering in examples, both sides of each one',
+    rx.includes('Catches') && rx.includes('Leaves alone'))
+  check('...so the \\b row says what it lets through and what it does not',
+    rxCells.includes('\\bvinyl\\b') && rx.includes('vinylcollector'))
+  // The four-backslash trap, seen from the far end: with two, every expression
+  // in this table would render as a little box.
+  check('...with real backslashes, not backspaces',
+    rx.includes('\\b') && !rx.includes('\u0008'))
+  check('...* shown repeating one letter, not standing in for a word',
+    rxCells.includes('vinyl*') && rxCells.includes('viny · vinyl · vinylll'))
+  check('...the Cyrillic trap gets a row, and the fix the row beneath it',
+    rxCells.includes('\\bвинил\\b') &&
+      rxCells.includes('(?<!\\p{L})винил(?!\\p{L})'))
+  // Phrases only the notes use — 'not a wildcard' also sits in a table cell,
+  // so asking for that would be the examples answering for the prose again.
+  check('...and the traps are spelled out under the tables',
+    rx.includes('repeats whatever stands immediately before it') &&
+      rx.includes('cannot see Cyrillic') && rx.includes('Type ONE backslash'))
+  rxToggle.handlers['click']()
+  check('...and it shuts again', rxBody.className === 'hidden')
+
   console.log('\n── the whyNot panel')
   check('the panel is there', all.includes('Why is this post (not) in a feed?'))
   // Both the pin field and this one accept a post link, and the pin block is

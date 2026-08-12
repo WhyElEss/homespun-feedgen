@@ -1371,8 +1371,13 @@ export const ADMIN_PAGE = `<!doctype html>
     // that WRITES, and a control buried under two read-only panels is the
     // "nobody knows it exists" failure the bridgedPosts toggle already cost us.
     hosts.lab.appendChild(pinHost);
-    renderProbe(hosts.lab);
+    // whyNot before the probe, on the user's call. They answer different
+    // questions and the order says which one the tab is for: whyNot starts
+    // from a post you have in front of you, which is what brings anyone here;
+    // the probe starts from an expression you are still drafting, which is the
+    // second move and the longer card.
     renderWhyNot(hosts.lab);
+    renderProbe(hosts.lab);
     renderWizard(hosts.record);
 
     // A message lands IN the bar, so writing one changes how tall it is.
@@ -2361,6 +2366,137 @@ export const ADMIN_PAGE = `<!doctype html>
     }
 
 
+    // ── the regex reference that sits inside Try a pattern
+    //
+    // The field takes a JS RegExp and nothing on the page said what \b, a bare
+    // word or a trailing * actually catch. Written as EXAMPLES — expression,
+    // what it takes, what it leaves — because "\b is a word boundary" is a
+    // definition, and a definition is the thing nobody can apply to the token
+    // in front of them.
+    //
+    // EVERY ROW WAS RUN AGAINST THE REAL ENGINE at the flags the probe uses
+    // before it was written down. A table of examples that are only roughly
+    // right is worse than no table, because it gets believed.
+    //
+    // FOUR backslashes throughout: the template literal eats one pair and the
+    // browser's JS parser the other, so \\\\b reaches the screen as \b. With
+    // two it arrives as U+0008 BACKSPACE and the cell shows a little box.
+    function regexHelp() {
+      var PIECES = [
+        ['\\\\b', 'a word edge — the join between a letter, digit or _ and anything else'],
+        ['\\\\w \\\\d \\\\s', 'one letter, digit or _ · one digit · one space, tab or newline'],
+        ['.', 'any one character except a newline'],
+        ['? * +', 'THE THING BEFORE IT, 0 or 1 · 0 or more · 1 or more times'],
+        ['{2,4}', 'the thing before it, 2 to 4 times'],
+        ['[abc] [^abc]', 'one of these characters · any one character except these'],
+        ['(?:a|b)', 'a or b — the ?: is what keeps the brackets from capturing'],
+        ['(?!x) (?<!x)', 'only where x does NOT follow · where x does not come first'],
+        ['\\\\p{L}', 'one letter in any alphabet, Cyrillic included'],
+        ['\\\\. \\\\$ \\\\(',
+         'a literal dot, dollar or bracket — escape anything with a job in this table']
+      ];
+      var EXAMPLES = [
+        ['vinyl', 'vinyl · Vinyl · vinylcollector · polyvinyl',
+         'nothing — a bare word is a substring, anywhere, in any case'],
+        ['\\\\bvinyl\\\\b', 'vinyl · vinyl. · (vinyl) · vinyl-only',
+         'vinylcollector · polyvinyl'],
+        ['\\\\bvinyl', 'vinyl · vinyls · vinylcollector', 'polyvinyl'],
+        ['vinyl\\\\b', 'vinyl · polyvinyl', 'vinyls'],
+        ['\\\\bcollect\\\\w*', 'collect · collector · collecting', 'recollect'],
+        ['\\\\brecords?\\\\b', 'record · records', 'recorded · recording'],
+        ['vinyl*', 'viny · vinyl · vinylll',
+         'the * repeats the l before it — this is not a wildcard'],
+        ['\\\\b(?:lp|ep)\\\\b', 'LP · an EP.', 'help · clipped · sleep'],
+        ['discogs\\\\.com', 'discogs.com', 'discogs-com'],
+        ['discogs.com', 'discogs.com · discogs-com · discogsXcom',
+         'the unescaped dot is any character at all'],
+        ['#(?:vinyl|records)\\\\b', '#vinyl · #Records!', '#vinylcollection · vinyl'],
+        // "new  wave" cannot be an example of itself here — HTML collapses the
+        // second space, so the cell would read as the same string twice.
+        ['\\\\bnew\\\\s+wave\\\\b',
+         'new wave · however many spaces between them · a line break between them',
+         'newwave · new-wave'],
+        ['\\\\bLP\\\\b', 'LP — with Case sensitive ticked above', 'lp · Lp'],
+        ['\\\\bsale\\\\b(?! of the century)', 'on sale now · sale!', 'sale of the century'],
+        ['\\\\bвинил\\\\b', 'nothing at all — see the first note below',
+         'винил · винила · поливинил'],
+        ['(?<!\\\\p{L})винил(?!\\\\p{L})', 'винил · винил. · на винил', 'винила · поливинил']
+      ];
+      var NOTES = [
+        '\\\\b cannot see Cyrillic. A word edge is defined against \\\\w, which is ' +
+          'A–Z, 0–9 and _ only, so \\\\bвинил\\\\b matches no ordinary Russian text ' +
+          'whatsoever — it is not stricter, it is dead. Use ' +
+          '(?<!\\\\p{L})винил(?!\\\\p{L}) for the whole word, and ' +
+          '(?<!\\\\p{L})пласт\\\\p{L}* for the word and its endings.',
+        '* is not a wildcard. It repeats whatever stands immediately before it, ' +
+          'so рок* is "ро" plus any number of к. For "then anything" write .*, ' +
+          'for "and the rest of the word" write \\\\w* or \\\\p{L}*.',
+        '^ and $ are the ends of the WHOLE haystack, not of a line — there is no ' +
+          'm flag. ^vinyl matches only a post that opens with the word, and on the ' +
+          'wider targets the alt text and the links are joined on after the text ' +
+          'with newlines, so $ sits past all of them.',
+        'Inline flags are Python and Go syntax. (?i) is a syntax error here and ' +
+          'the pattern is refused; case is already ignored unless you tick the box.',
+        'Type ONE backslash in this field. filters.json shows \\\\\\\\b for the same ' +
+          'pattern because JSON doubles it on the way to disk — the editor does ' +
+          'that for you, and it is not part of the expression.',
+        'A space is a literal space, and a post is free to use two of them or a ' +
+          'line break. \\\\s+ is what "one or more spaces" is written as.'
+      ];
+
+      var open = false;
+      var toggle = h('button', { class: 'linkish' });
+      var body = h('div', {}, []);
+
+      body.appendChild(h('p', { class: 'small muted', text:
+        'A JavaScript regular expression, run with the flags iu — case ignored, ' +
+        'Unicode understood. It is tested against the target chosen above, and ' +
+        'a match anywhere inside it counts.' }));
+      body.appendChild(h('div', { class: 'card wrap' }, [
+        h('table', {}, [
+          h('thead', {}, [h('tr', {}, [
+            h('th', { text: 'Expression' }), h('th', { text: 'Catches' }),
+            h('th', { text: 'Leaves alone' })])]),
+          h('tbody', {}, EXAMPLES.map(function (r) {
+            return h('tr', {}, [
+              h('td', { class: 'mono small', text: r[0] }),
+              h('td', { class: 'small', text: r[1] }),
+              h('td', { class: 'small muted', text: r[2] })
+            ]);
+          }))])]));
+      // Not decoration: .card carries no margin of its own, so two tables in a
+      // row touch and read as one table with a second header in the middle of
+      // it. A line of text between them is what every other pair of cards on
+      // this page is separated by.
+      body.appendChild(h('p', { class: 'small muted', text:
+        'The pieces those are built from:' }));
+      body.appendChild(h('div', { class: 'card wrap' }, [
+        h('table', {}, [
+          h('thead', {}, [h('tr', {}, [
+            h('th', { text: 'Piece' }), h('th', { text: 'What it means' })])]),
+          h('tbody', {}, PIECES.map(function (r) {
+            return h('tr', {}, [
+              h('td', { class: 'mono small', text: r[0] }),
+              h('td', { class: 'small', text: r[1] })
+            ]);
+          }))])]));
+      body.appendChild(h('p', { class: 'small muted', text:
+        'And the traps behind them:' }));
+      body.appendChild(h('ul', { class: 'changes small' },
+        NOTES.map(function (t) { return h('li', { text: t }); })));
+
+      function paint() {
+        toggle.textContent = (open ? '− ' : '+ ') + 'Regex — what each form catches';
+        toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        // Hidden, never removed: the same rule the pattern blocks follow, and
+        // it costs nothing here since the whole card is built once.
+        body.className = open ? '' : 'hidden';
+      }
+      toggle.addEventListener('click', function () { open = !open; paint(); });
+      paint();
+      return h('div', {}, [h('div', { class: 'toolbar' }, [toggle]), body]);
+    }
+
     // ── probe: one regex over the stored posts, without building a whole
     // candidate config first. This is the measurement the filter policy is
     // written from, made cheap enough to actually do before every edit.
@@ -2454,7 +2590,7 @@ export const ADMIN_PAGE = `<!doctype html>
           'and shows what it matched in each. As an exclude, that count is exactly ' +
           'what would leave. An include cannot be measured this way — posts it ' +
           'would newly bring in were never stored here.' }),
-        out, body
+        regexHelp(), out, body
       ]));
     }
 
