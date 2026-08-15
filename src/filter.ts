@@ -394,6 +394,9 @@ export const getRetentions = (): Map<string, Retention> => {
 
 type ExternalCard = { uri?: string; title?: string; description?: string }
 type ImageWithAlt = { alt?: string }
+// app.bsky.embed.gallery#image / #video — the successor to images[], carrying
+// the same alt text one level further in.
+type GalleryItem = { $type?: string; alt?: string; presentation?: string }
 
 export type MatchablePost = {
   text?: string
@@ -411,13 +414,21 @@ export type MatchablePost = {
     $type?: string
     external?: ExternalCard // app.bsky.embed.external
     images?: ImageWithAlt[] // app.bsky.embed.images
+    items?: GalleryItem[] // app.bsky.embed.gallery
     alt?: string // app.bsky.embed.video
+    // app.bsky.embed.video: "default" or "gif". Not in the pinned SDK's types
+    // — it is newer than the version this project builds against — but it is
+    // in the records the firehose delivers, and it is the only mark an
+    // uploaded GIF has once the client has turned it into an mp4.
+    presentation?: string
     media?: {
       // app.bsky.embed.recordWithMedia
       $type?: string
       external?: ExternalCard
       images?: ImageWithAlt[]
+      items?: GalleryItem[]
       alt?: string
+      presentation?: string
     }
   }
 }
@@ -425,6 +436,12 @@ export type MatchablePost = {
 const altTexts = (record: MatchablePost): string[] => {
   const images = record.embed?.images ?? record.embed?.media?.images ?? []
   const parts = images.map((img) => img.alt ?? '')
+  // app.bsky.embed.gallery is app.bsky.embed.images' successor and keeps its
+  // pictures under `items` instead. Read the same way or a gallery post is one
+  // whose alt text the filter cannot see: 12 of the 15 stored on 2026-08-14
+  // carried alt text that never reached a haystack.
+  const items = record.embed?.items ?? record.embed?.media?.items ?? []
+  for (const it of items) if (it.alt) parts.push(it.alt)
   const videoAlt = record.embed?.alt ?? record.embed?.media?.alt
   if (videoAlt) parts.push(videoAlt)
   return parts
@@ -457,11 +474,36 @@ export const buildHaystacks = (record: MatchablePost): Haystacks => {
   }
 }
 
-// Bluesky GIFs are external embeds pointing at Tenor (or a bare .gif URL)
+// A GIF arrives in TWO different shapes and this used to know only one.
+//
+//   * PICKED from the GIF button: an external embed pointing at Tenor, or at a
+//     bare .gif URL. Nothing is uploaded, so the card is the whole post;
+//   * UPLOADED from your own files: the client TRANSCODES it to mp4 and posts
+//     app.bsky.embed.video with `presentation: "gif"`. There is no .gif
+//     anywhere in the record — the blob is video/mp4 — so every uri test in
+//     the world misses it, and `gifPosts: exclude` silently let it through.
+//     Found 2026-08-14 from a post the user saw in Vinyl; 3 more were sitting
+//     in the feeds. `presentation` is newer than the pinned @atproto/api, so
+//     it is not in the SDK's types, but it is in the record: the live traffic
+//     carries "default" and "gif" and nothing else.
+//
+// The gallery arm is defensive rather than measured — no stored gallery item
+// has carried `presentation` yet — but a gallery is where an uploaded GIF
+// would go next, and it is one condition.
 const isGifPost = (record: MatchablePost): boolean => {
   const uri =
     record.embed?.external?.uri ?? record.embed?.media?.external?.uri ?? ''
-  return /\.gif(?:$|\?)/i.test(uri) || /(?:^|\.)tenor\.com\//i.test(uri)
+  // `//` as well as `.`: the host can be tenor.com itself, and `(?:^|\.)` only
+  // ever matched a SUBDOMAIN — media.tenor.com passed, https://tenor.com/view/…
+  // did not. Hidden until now because the picker's cards are media.tenor.com
+  // and end in .gif, so the other arm caught them anyway. Neither alternative
+  // is a bare `/`, which would take https://elsewhere.com/tenor.com/.
+  if (/\.gif(?:$|\?)/i.test(uri) || /(?:^|\/\/|\.)tenor\.com\//i.test(uri)) return true
+  return [record.embed, record.embed?.media].some(
+    (e) =>
+      e?.presentation === 'gif' ||
+      (e?.items ?? []).some((it) => it.presentation === 'gif'),
+  )
 }
 
 // Does the post carry a picture or a video of its OWN? A feed whose subject is
@@ -477,6 +519,11 @@ const hasMedia = (record: MatchablePost): boolean => {
   if (!e) return false
   const images = e.images ?? e.media?.images
   if ((images?.length ?? 0) > 0) return true
+  // A gallery is the poster's own pictures, exactly like images — and a feed
+  // running mediaPosts: only was DROPPING them, which on a feed about what
+  // people photograph is the worst possible way to be wrong.
+  const items = e.items ?? e.media?.items
+  if ((items?.length ?? 0) > 0) return true
   return e.$type === 'app.bsky.embed.video' || e.media?.$type === 'app.bsky.embed.video'
 }
 
