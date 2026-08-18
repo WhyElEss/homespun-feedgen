@@ -228,7 +228,10 @@ const run = async () => {
   fs.writeFileSync(
     path.join(TMP, 'auto-purge-withheld.jsonl'),
     [
-      '{"at":"2026-08-09T17:05:00Z","mode":"rejected","count":180,"stored":1400,"limit":25}',
+      '{"at":"2026-08-09T17:05:00Z","mode":"rejected","feed":"coffee","count":180,"stored":1400,"limit":25}',
+      // Written before auto-purge went per-feed: box-wide counts, no feed. The
+      // page has to be able to tell the two apart, so the reader keeps it.
+      '{"at":"2026-08-09T16:05:00Z","mode":"rejected","count":103,"stored":1635,"limit":25}',
       // Before the window opens.
       '{"at":"2026-08-01T10:00:00Z","mode":"blocked","count":40,"stored":1400,"limit":25}',
       'not json at all',
@@ -236,10 +239,12 @@ const run = async () => {
     ].join('\n'),
   )
   const c = await collectActivity(db, NOW)
-  check('one withheld event in the window', c.withheld.length, 1)
+  check('two withheld events in the window', c.withheld.length, 2)
+  check('...naming the feed it was scoped to', c.withheld[0].feed, 'coffee')
   check('...with its count', c.withheld[0].count, 180)
   check('...and the cap it hit', c.withheld[0].limit, 25)
   check('...and which sweep it was', c.withheld[0].mode, 'rejected')
+  check('a legacy record keeps its box-wide shape, with no feed', c.withheld[1].feed, '')
   checkTrue(
     'an unreadable line is reported',
     c.notes.some((n) => n.indexOf('unreadable line') > -1),

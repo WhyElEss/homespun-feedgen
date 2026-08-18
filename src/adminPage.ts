@@ -1008,20 +1008,33 @@ export const ADMIN_PAGE = `<!doctype html>
     // A sweep the cap refused deletes nothing, so it leaves no dump — this row
     // is the only trace of it anywhere the page can reach.
     function renderWithheld(w) {
+      // A sweep is scoped to ONE feed now, so a refused one names it and its
+      // counts belong to that feed. Records written before that change carry
+      // box-wide numbers with no feed, and saying so is the whole point: this
+      // row used to sit under whichever feed happened to be selected showing a
+      // total for all four, which is how "103 of 1635" appeared under a feed
+      // holding 249 posts.
+      var head = [
+        h('span', { class: 'swtime', text: localHM(w.at) }),
+        h('span', { class: 'pill warn', text: 'held back' }),
+        h('span', { class: 'small muted', text: w.mode })
+      ];
+      if (w.feed) {
+        head.push(h('span', { class: 'small', text:
+          (activityNames[w.feed] || w.feed) + ': ' + w.count + ' of ' + w.stored +
+          ' would have gone, cap ' + w.limit }));
+      } else {
+        head.push(h('span', { class: 'small', text: w.count + ' of ' + w.stored +
+                                                   ' would have gone, cap ' + w.limit }));
+      }
       list.appendChild(h('div', { class: 'sweep' }, [
-        h('div', { class: 'swhead' }, [
-          h('span', { class: 'swtime', text: localHM(w.at) }),
-          h('span', { class: 'pill warn', text: 'held back' }),
-          h('span', { class: 'small muted', text: w.mode }),
-          h('span', { class: 'small', text: w.count + ' of ' + w.stored +
-                                            ' would have gone, cap ' + w.limit })
-        ]),
+        h('div', { class: 'swhead' }, head),
         h('p', { class: 'small muted', text:
           'The safety cap refused this sweep, so nothing was deleted. A valid ' +
           'but wrong pattern is what that cap is for — check what it would ' +
-          'take before running purgePosts by hand. This one is listed whichever ' +
-          'feed is selected: a refused sweep deletes nothing, so there is no ' +
-          'per-feed count to scope it by.' })
+          'take before running purgePosts by hand.' + (w.feed ? '' :
+          ' This record predates per-feed sweeps: its counts cover every feed ' +
+          'on the box, not the one selected above.') })
       ]));
     }
 

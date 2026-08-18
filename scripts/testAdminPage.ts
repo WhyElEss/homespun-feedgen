@@ -174,7 +174,13 @@ const ACTIVITY = {
       },
     ],
     withheld: [
-      { at: HOURS24[18] + ':05:00.000Z', mode: 'rejected', count: 180, stored: 1400, limit: 25 },
+      { at: HOURS24[18] + ':05:00.000Z', mode: 'rejected', feed: 'coffee',
+        count: 180, stored: 1400, limit: 25 },
+      // No feed: written before auto-purge swept one feed at a time, so its
+      // counts are box-wide and the row must say so instead of showing them
+      // under whichever feed is selected.
+      { at: HOURS24[17] + ':05:00.000Z', mode: 'rejected', feed: '',
+        count: 103, stored: 1635, limit: 25 },
     ],
     notes: [],
   },
@@ -482,6 +488,12 @@ const run = async () => {
   check('...and how the post read', actText().includes('buy my thing'))
   check('a sweep the cap refused is shown too', actText().includes('held back'))
   check('...with what it would have taken', actText().includes('180 of 1400'))
+  // The number belongs to a feed now, and the row names it. The box-wide row
+  // that used to appear under any selected feed is what produced "103 of 1635"
+  // under a feed holding 249 posts.
+  check('...scoped to the feed it was refused for', actText().includes('Coffee: 180 of 1400'))
+  check('a record with no feed says its counts are box-wide',
+    actText().includes('predates per-feed sweeps'))
 
   const outLinks = find(actCard, 'a').filter((a) => (a.attrs.href || '').includes('bsky.app'))
   check('a removed post can still be opened', outLinks.length === 5)

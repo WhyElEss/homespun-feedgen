@@ -58,6 +58,10 @@ export type PurgeEvent = {
 export type WithheldEvent = {
   at: string
   mode: string
+  // The feed the refused sweep was scoped to. Empty on records written before
+  // auto-purge went per-feed: those carry BOX-WIDE counts, and the page has to
+  // say so rather than show them under whichever feed is selected.
+  feed: string
   count: number
   stored: number
   limit: number
@@ -279,6 +283,7 @@ const readWithheld = (dir: string, from: string, notes: string[]): WithheldEvent
       out.push({
         at,
         mode: str(o.mode) || 'unknown',
+        feed: str(o.feed),
         count: Number(o.count) || 0,
         stored: Number(o.stored) || 0,
         limit: Number(o.limit) || 0,
