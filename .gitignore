@@ -143,3 +143,6 @@ data/
 .env.bak*
 *.bak-*
 *.bak
+
+# the static preview generator writes here (scripts/previewAdminPage.ts)
+preview-admin*.html
