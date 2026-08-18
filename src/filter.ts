@@ -23,7 +23,7 @@ const FILTERS_PATH = process.env.FEEDGEN_FILTERS_PATH ?? '/data/filters.json'
 const RELOAD_CHECK_INTERVAL_MS = 10_000
 
 // Which fields a pattern is tested against. Mirrors SkyFeed's block targets.
-type Target = 'text' | 'text|alt_text' | 'text|alt_text|link'
+export type Target = 'text' | 'text|alt_text' | 'text|alt_text|link'
 const TARGETS: Target[] = ['text', 'text|alt_text', 'text|alt_text|link']
 
 const DEFAULT_INCLUDE_TARGET: Target = 'text|alt_text'
