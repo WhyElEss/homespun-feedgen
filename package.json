@@ -16,6 +16,7 @@
     "purgePosts": "ts-node scripts/purgePosts.ts",
     "probeCorpus": "ts-node scripts/probeCorpus.ts",
     "previewAdminPage": "ts-node scripts/previewAdminPage.ts",
+    "probeWatchdog": "FEEDGEN_FILTERS_PATH=/tmp/watchdog-probe-filters.json ts-node scripts/probeWatchdog.ts",
     "test:filters": "FEEDGEN_FILTERS_PATH=./filters.example.json ts-node scripts/testFilter.ts",
     "test:bridged": "ts-node scripts/testBridged.ts",
     "test:media": "ts-node scripts/testMedia.ts",

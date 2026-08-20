@@ -43,7 +43,9 @@ const CURSOR_SAVE_INTERVAL_MS = 10_000
 // this long is never a quiet period -- it is a connection that has stopped
 // existing. Anything above a few seconds would do; a minute is chosen to leave
 // room for a slow replay without ever being mistaken for real traffic.
-const IDLE_TIMEOUT_MS = 60_000
+// Exported so scripts/probeWatchdog.ts derives its waits from the real value
+// instead of a copy that can drift.
+export const IDLE_TIMEOUT_MS = 60_000
 const IDLE_CHECK_INTERVAL_MS = 10_000
 // The independent second line, and the one that needs no timer to be right: a
 // write on a half-open socket makes the kernel retransmit, and the retransmit
