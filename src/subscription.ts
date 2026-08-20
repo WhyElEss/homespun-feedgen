@@ -32,6 +32,29 @@ type JetstreamEvent = {
 const CURSOR_REWIND_US = 5_000_000
 const CURSOR_SAVE_INTERVAL_MS = 10_000
 
+// A dead link does not always produce a socket event. If the path disappears
+// without the peer sending FIN or RST -- a switch reboot, a cable pulled, a NAT
+// table wiped -- the connection sits half-open: no 'close', no 'error', and the
+// reconnect below therefore never runs. The process stays perfectly healthy and
+// ingests nothing. That is exactly what a 77-second link flap did on
+// 2026-08-19: ingest stopped for 10.5 hours and only a reboot noticed.
+//
+// The stream carries every post on the network, several per second, so silence
+// this long is never a quiet period -- it is a connection that has stopped
+// existing. Anything above a few seconds would do; a minute is chosen to leave
+// room for a slow replay without ever being mistaken for real traffic.
+const IDLE_TIMEOUT_MS = 60_000
+const IDLE_CHECK_INTERVAL_MS = 10_000
+// The independent second line, and the one that needs no timer to be right: a
+// write on a half-open socket makes the kernel retransmit, and the retransmit
+// eventually raises ECONNRESET or ETIMEDOUT, which DOES reach 'error'/'close'.
+// A pong is deliberately not counted as liveness -- a peer that answers pings
+// while sending no events is still a feed that has stopped.
+const PING_INTERVAL_MS = 30_000
+// ws has no connect timeout of its own, so a SYN into a black hole would hang
+// in CONNECTING forever -- the same silent stall one step earlier.
+const HANDSHAKE_TIMEOUT_MS = 30_000
+
 // SkyFeed "remove by list" block: member DIDs are refreshed periodically
 const LIST_REFRESH_INTERVAL_MS = 60 * 60 * 1000
 
@@ -41,6 +64,9 @@ const LIST_REFRESH_INTERVAL_MS = 60 * 60 * 1000
 export class JetstreamSubscription {
   private ws?: WebSocket
   private cursor?: number
+  // Wall clock, not event time: this measures whether the SOCKET is alive, and
+  // a replay delivers hours-old events perfectly healthily.
+  private lastMessageAt = 0
   // feed key -> DIDs muted for that feed by its moderation list.
   // Not private: the ingest path is the least covered code here and the most
   // consequential, so the tests drive it directly rather than through a socket.
@@ -67,6 +93,30 @@ export class JetstreamSubscription {
     setInterval(() => {
       this.gc().catch((err) => console.error('gc failed', err))
     }, GC_INTERVAL_MS)
+    setInterval(() => this.checkAlive(), IDLE_CHECK_INTERVAL_MS)
+    setInterval(() => {
+      if (this.ws?.readyState === WebSocket.OPEN) this.ws.ping()
+    }, PING_INTERVAL_MS)
+  }
+
+  // Public for the same reason as handleMessage below: the tests drive it with
+  // a stub socket, because the failure it exists for cannot be reached through
+  // a real connection. Returns whether it gave up on the current socket.
+  checkAlive(now = Date.now()): boolean {
+    const ws = this.ws
+    if (!ws) return false
+    const idleMs = now - this.lastMessageAt
+    if (idleMs < IDLE_TIMEOUT_MS) return false
+    console.warn(
+      `jetstream: no data for ${Math.round(idleMs / 1000)}s, forcing a reconnect`,
+    )
+    // Stamped before terminating, not after: 'close' arrives asynchronously and
+    // the next tick must not fire again while that reconnect is still landing.
+    this.lastMessageAt = now
+    // terminate(), not close(): a half-open socket will never answer a closing
+    // handshake. This reaches 'close' below, which is the only reconnect path.
+    ws.terminate()
+    return true
   }
 
   private async gc() {
@@ -84,17 +134,24 @@ export class JetstreamSubscription {
     }
     const url = `${this.service}/subscribe?${params.toString()}`
     console.log(`jetstream: connecting to ${url}`)
-    this.ws = new WebSocket(url)
+    // Stamped before the socket exists, so the watchdog never counts the time
+    // spent connecting: a slow handshake would otherwise terminate itself.
+    this.lastMessageAt = Date.now()
+    const ws = new WebSocket(url, { handshakeTimeout: HANDSHAKE_TIMEOUT_MS })
+    this.ws = ws
 
-    this.ws.on('message', (data) => {
+    ws.on('message', (data) => {
       this.handleMessage(data.toString()).catch((err) =>
         console.error('jetstream: could not handle message', err),
       )
     })
-    this.ws.on('error', (err) => {
+    ws.on('error', (err) => {
       console.error('jetstream: socket error', err)
     })
-    this.ws.on('close', () => {
+    ws.on('close', () => {
+      // A socket we have already replaced can still close late; acting on it
+      // would open a second connection alongside the live one.
+      if (this.ws !== ws) return
       console.warn(`jetstream: disconnected, retrying in ${reconnectDelay}ms`)
       setTimeout(() => this.connect(reconnectDelay), reconnectDelay)
     })
@@ -102,6 +159,10 @@ export class JetstreamSubscription {
 
   // Public for the same reason as excludedDids above: testable end to end.
   async handleMessage(raw: string) {
+    // Liveness is "bytes arrived", so it is stamped before anything can reject
+    // this message -- an event for a collection we ignore still proves the
+    // socket is carrying traffic.
+    this.lastMessageAt = Date.now()
     const evt = JSON.parse(raw) as JetstreamEvent
     this.cursor = evt.time_us
 

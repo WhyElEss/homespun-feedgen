@@ -159,6 +159,43 @@ const run = async () => {
   await sub.handleMessage(commit({ text: 'tea', rkey: 'z1', time: late }))
   check('advances even on an event that stores nothing', (sub as any).cursor === late)
 
+  console.log('\n── the idle watchdog')
+  // The regression this guards is a real outage: a 77-second link flap on
+  // 2026-08-19 left the socket half-open, no 'close' or 'error' ever fired, and
+  // ingest stopped for 10.5 hours behind a process that looked perfectly well.
+  // Driven with a stub socket -- the whole point of the failure is that a real
+  // connection produces no event to test against.
+  const stub = { terminated: 0, readyState: 1, terminate() { this.terminated++ } }
+  const sub2 = new JetstreamSubscription(db, 'wss://example.invalid')
+  const poke = (o: Record<string, unknown>) => Object.assign(sub2 as any, o)
+
+  poke({ ws: stub, lastMessageAt: Date.now() })
+  check('a talking connection is left alone', sub2.checkAlive() === false && stub.terminated === 0)
+
+  poke({ lastMessageAt: Date.now() - 61_000 })
+  check('a silent one is terminated', sub2.checkAlive() === true && stub.terminated === 1)
+  check(
+    'and not terminated again while the reconnect lands',
+    sub2.checkAlive() === false && stub.terminated === 1,
+  )
+
+  poke({ lastMessageAt: Date.now() - 61_000 })
+  await sub2.handleMessage(commit({ text: 'tea', rkey: 'live1' }))
+  check(
+    'any arriving message counts, even one that stores nothing',
+    sub2.checkAlive() === false && stub.terminated === 1,
+  )
+
+  poke({ lastMessageAt: Date.now() - 61_000 })
+  await sub2.handleMessage('{ not json').catch(() => {})
+  check(
+    'so does one that cannot be parsed - bytes are bytes',
+    sub2.checkAlive() === false && stub.terminated === 1,
+  )
+
+  poke({ ws: undefined, lastMessageAt: 0 })
+  check('with no socket there is nothing to give up on', sub2.checkAlive() === false)
+
   console.log(`\n${pass === total ? 'All' : `${pass} of`} ${total} checks passed`)
   process.exit(pass === total ? 0 : 1)
 }
