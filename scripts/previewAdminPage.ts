@@ -45,15 +45,30 @@ export const ROUTES: [string, string][] = [
   ['totp/status', 'totp'],
   ['activity', 'activity'],
   ['/record', 'record'],
+  ['whynot', 'whynot'],
   ['filters', 'filters'],
 ]
 
 // The body this URL should answer with, or null for "no such route" — which the
 // stub turns into a 404 whose json() REJECTS, because that is what express does
 // with an unmatched route and what the page has to survive.
+// Matched on the END of the url, not anywhere inside it. indexOf was wrong in
+// two ways that both bite in practice:
+//
+//   * /admin/filters/validate CONTAINS "filters", so a candidate config being
+//     validated was answered with the filters fixture instead of the 404 the
+//     page has to survive;
+//   * opened straight from disk the preview can be served as a data: URL, and
+//     the page anchors every call to location.pathname — which is then the
+//     whole page source. That string contains "activity" and "/record" long
+//     before the route being asked for, so every call resolved to whichever
+//     needle happened to appear in the HTML first.
+//
+// A route is the tail of the path, so match the tail.
 export const routeFor = (url: string, fixtures: Fixtures): unknown => {
+  const path = String(url).split('?')[0]
   for (const [needle, key] of ROUTES) {
-    if (url.indexOf(needle) > -1) return fixtures[key] ?? null
+    if (path.slice(-needle.length) === needle) return fixtures[key] ?? null
   }
   return null
 }
@@ -134,6 +149,35 @@ export const defaultFixtures = (now: number = Date.now()): Fixtures => {
     totp: { ok: true, enabled: true, source: 'file', managedHere: true, broken: false,
             file: '/data/admin-totp.json' },
 
+    // A dropped post, with the deciding word occurring in BOTH the text and the
+    // alt, and an alt long enough to have been cut by the 400-character limit
+    // this panel used to have. Different capitalisation in the alt, because the
+    // mark takes its letters from the post and not from the pattern.
+    whynot: { ok: true, result: {
+      uri: 'at://did:plc:author/app.bsky.feed.post/3kexample', did: 'did:plc:author',
+      handle: 'someone.example.com', createdAt: iso, embed: 'app.bsky.embed.images',
+      isReply: false,
+      text: 'A quiet morning and a fresh bag of beans. The roaster is a local ' +
+            'artist and the label is hand drawn.',
+      alt: 'A paper bag of coffee on a kitchen table, photographed from above. ' +
+           'The Artist who drew the label is credited on the side. ' +
+           'A long description, because a caption can run on for a while and the ' +
+           'word being explained is worth nothing if the preview stops before it. '
+             .repeat(3) +
+           'One last mention of the artist at the very end.',
+      feeds: [
+        { key: 'coffee', displayName: 'Coffee', stored: false, wouldIndex: false,
+          reason: 'excluded by "artist" (offtopic: art and illustration)',
+          includeMatch: 'coffee', includeTarget: 'text|alt_text',
+          excludeMatch: 'artist', excludeComment: 'offtopic: art and illustration',
+          excludeTarget: 'text|alt_text|link', excludePattern: null,
+          mutedByList: false, disagrees: false },
+        { key: 'radio', displayName: 'Radio', stored: false, wouldIndex: false,
+          reason: 'author did:plc:author not in includeDids', includeMatch: null,
+          includeTarget: null, excludeMatch: null, excludeComment: null,
+          excludeTarget: null, excludePattern: null, mutedByList: false,
+          disagrees: false },
+      ] } },
     record: { ok: true, record: { displayName: 'Coffee', description: 'A feed about coffee.',
                                   avatar: null }, avatarUrl: null },
   }
@@ -151,7 +195,9 @@ export const buildPreview = (page: string, fixtures: Fixtures): string => {
     'var ROUTES=' + JSON.stringify(ROUTES) + ';' +
     'window.fetch=function(u){' +
     'var p=String(u),b=null,i;' +
-    'for(i=0;i<ROUTES.length;i++){if(p.indexOf(ROUTES[i][0])>-1){b=R[ROUTES[i][1]]||null;break;}}' +
+    'p=p.split("?")[0];' +
+    'for(i=0;i<ROUTES.length;i++){var n=ROUTES[i][0];' +
+    'if(p.slice(-n.length)===n){b=R[ROUTES[i][1]]||null;break;}}' +
     'if(b===null){return Promise.resolve({status:404,ok:false,' +
     'json:function(){return Promise.reject(new Error("not JSON"));}});}' +
     'return Promise.resolve({status:200,ok:true,' +

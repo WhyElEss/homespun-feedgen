@@ -24,6 +24,23 @@ check('totp/status is not swallowed by the status route',
 check('activity resolves', routeFor('/admin/activity', fx) === fx.activity)
 check('filters resolves', routeFor('/admin/filters', fx) === fx.filters)
 check('a feed record resolves', routeFor('/admin/feed/coffee/record', fx) === fx.record)
+// The one panel whose whole job is presentation — a word marked inside a post —
+// and the rig could not render it until this route existed.
+check('whynot resolves', routeFor('/admin/whynot', fx) === fx.whynot)
+// Both of these resolved to the WRONG fixture while routes were matched with
+// indexOf: a candidate config being validated contains "filters", and a preview
+// opened as a data: URL puts the whole page source in front of the route.
+check('a route is the TAIL of the path, not a substring of it',
+  routeFor('/admin/filters/validate', fx) === null)
+check('...so a data: URL carrying the page source still resolves',
+  routeFor('data:text/html,<p>activity and /record everywhere</p>/whynot', fx) === fx.whynot)
+check('...to a verdict the preview can actually mark up',
+  (fx.whynot as any).result.feeds[0].excludeMatch === 'artist' &&
+    (fx.whynot as any).result.text.indexOf('artist') > -1 &&
+    (fx.whynot as any).result.alt.indexOf('Artist') > -1)
+check('...with an alt past the 400 characters this panel used to cut at',
+  (fx.whynot as any).result.alt.length > 400,
+  String((fx.whynot as any).result.alt.length))
 check('an unknown route is null, so the stub can 404 it',
   routeFor('/admin/nothing/here', fx) === null)
 check('every route in the table has a fixture',
