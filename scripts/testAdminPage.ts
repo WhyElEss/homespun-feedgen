@@ -493,6 +493,37 @@ const run = async () => {
     /^\d\d:00–\d\d:00 — /.test(cols[22].attrs.title || ''), cols[22].attrs.title)
   check('...and no completed hour is', !cols[22].className.includes('partial'))
 
+  // The numbers used to live ONLY in the native title tooltip, which needs a
+  // pointer to hover. On a phone the chart showed shapes and no figures, and
+  // there was no gesture that would reveal them.
+  console.log('\n── the chart answers without a pointer')
+  check('a column is a control, not a shape', cols[22].tagName === 'BUTTON')
+  check('...carrying the same sentence for a screen reader',
+    cols[22].attrs['aria-label'] === cols[22].attrs.title)
+  // 24 bars must not be 24 stops on the way past this card.
+  check('...with one tab stop for the whole row, arrows for the rest',
+    cols[0].attrs.tabindex === '0' && cols[22].attrs.tabindex === '-1')
+  const readout = () => walk(actCard).find((e) => e.className.includes('readout'))!
+  check('the readout starts on the whole window',
+    readout().textContent.indexOf('All 24 hours') === 0, readout().textContent)
+  cols[22].handlers['click']()
+  check('tapping a bar puts its hour in the readout',
+    readout().textContent === cols[22].attrs.title, readout().textContent)
+  check('...and marks which bar is being read',
+    cols[22].className.includes('sel') && cols[22].attrs['aria-pressed'] === 'true')
+  // Hover previews without stealing the pick, or moving the mouse across the
+  // chart throws away the bar you were reading.
+  cols[10].handlers['mouseenter']()
+  check('hovering another bar previews it', readout().textContent === cols[10].attrs.title)
+  check('...without changing the pick', cols[22].className.includes('sel'))
+  cols[10].handlers['blur']()
+  check('...and leaving it returns to the picked bar',
+    readout().textContent === cols[22].attrs.title)
+  cols[22].handlers['click']()
+  check('tapping the same bar again lets go',
+    readout().textContent.indexOf('All 24 hours') === 0 &&
+      !cols[22].className.includes('sel'))
+
   const actText = () => textOf(walk(statusPane())
     .find((e) => e.className.split(' ').indexOf('act') > -1)!)
   // One clock, and it is stated. The second lane that used to carry sweep

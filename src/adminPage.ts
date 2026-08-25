@@ -473,6 +473,21 @@ export const ADMIN_PAGE = `<!doctype html>
      traffic falling off a cliff. */
   .act .col.partial .track { border: 1px dashed var(--line); }
   .act .col.hi .track { outline: 2px solid var(--chart-removed); outline-offset: 1px; }
+  /* The columns are BUTTONS. The numbers used to live only in the native title
+     tooltip, which needs a pointer to hover — so on a phone the chart showed
+     shapes and no figures at all, and there was no gesture that would reveal
+     them. The bar is the control now, and what it says lands in .readout below
+     the chart rather than in a floating box that has nowhere to go on a narrow
+     screen. Reset the page's button chrome; keep only the hit area. */
+  .act .col { appearance: none; -webkit-appearance: none; padding: 0;
+              border: none; background: none; font: inherit; color: inherit;
+              text-align: inherit; display: block; width: 100%; cursor: pointer; }
+  .act .col:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  /* After .hi on purpose: a bar can be both, and the one you just picked is the
+     one you are looking for. */
+  .act .col.sel .track { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .act .readout { margin: .4rem 0 0; min-height: 2.6em;
+                  font-variant-numeric: tabular-nums; }
   .act .seg { min-height: 2px; }
   .act .seg.stored { background: var(--chart-stored); border-radius: 2px 2px 0 0; }
   /* Orange rather than red: a sweep you asked for is not an error. */
@@ -881,7 +896,7 @@ export const ADMIN_PAGE = `<!doctype html>
 
     var cols = h('div', { class: 'cols' }, []);
     var axis = h('div', { class: 'axis' }, []);
-    var colEls = [];
+    var colEls = [], colTitles = [], colBase = [];
     for (i = 0; i < 24; i++) {
       var iso = d.hours[i] + ':00:00.000Z';
       var start = new Date(Date.parse(iso));
@@ -906,10 +921,18 @@ export const ADMIN_PAGE = `<!doctype html>
         style: 'height:' + Math.round(pu / max * 100) + '%' }));
       if (st) track.appendChild(h('div', { class: 'seg stored',
         style: 'height:' + Math.round(st / max * 100) + '%' }));
-      var col = h('div', { class: 'col' + (outside ? ' outside' : '') +
+      // A button, not a div: see the .col rules. title stays for the desktop
+      // hover everyone already expects; aria-label carries the same sentence
+      // for anyone not using a pointer.
+      var col = h('button', { type: 'button',
+                           class: 'col' + (outside ? ' outside' : '') +
                                   (partial ? ' partial' : ''),
-                           title: title, 'data-hour': d.hours[i],
+                           title: title, 'aria-label': title,
+                           'aria-pressed': 'false', tabindex: i === 0 ? '0' : '-1',
+                           'data-hour': d.hours[i],
                            'data-stored': String(st), 'data-purged': String(pu) }, [track]);
+      colTitles.push(title);
+      colBase.push(col.className);
       colEls.push(col);
       cols.appendChild(col);
       axis.appendChild(h('span', {
@@ -922,6 +945,65 @@ export const ADMIN_PAGE = `<!doctype html>
 
     card.appendChild(cols);
     card.appendChild(axis);
+
+    // Where a column's numbers actually land. A fixed line under the chart
+    // rather than a floating tooltip: it needs no pointer, it cannot be
+    // positioned off the edge of a phone, and it is one place to look whether
+    // the bar was tapped, hovered or reached with the keyboard.
+    var totStored = 0, totPurged = 0;
+    for (i = 0; i < 24; i++) { totStored += series.stored[i]; totPurged += series.purged[i]; }
+    var restText = 'All 24 hours — ' + totStored + ' stored' +
+      (totPurged ? ', ' + totPurged + ' removed by a purge' : '') +
+      '. Tap or hover a bar for one hour.';
+    var readout = h('p', { class: 'small muted readout', role: 'status',
+                           text: restText });
+    card.appendChild(readout);
+
+    var picked = -1;
+    function paintPicked() {
+      for (var j = 0; j < colEls.length; j++) {
+        var on = j === picked;
+        colEls[j].className = colBase[j] + (on ? ' sel' : '');
+        colEls[j].setAttribute('aria-pressed', on ? 'true' : 'false');
+        // Roving tabindex: 24 bars must not be 24 stops on the way past this
+        // card. Arrows walk them, the same shape the tab strip uses.
+        colEls[j].setAttribute('tabindex', on || (picked < 0 && j === 0) ? '0' : '-1');
+      }
+      readout.textContent = picked < 0 ? restText : colTitles[picked];
+    }
+    (function () {
+      for (var j = 0; j < colEls.length; j++) {
+        (function (idx) {
+          var el = colEls[idx];
+          el.addEventListener('click', function () {
+            picked = picked === idx ? -1 : idx;
+            paintPicked();
+          });
+          // Hover and focus PREVIEW without changing the pick, so moving the
+          // mouse across the chart does not throw away the bar being read.
+          el.addEventListener('mouseenter', function () {
+            readout.textContent = colTitles[idx];
+          });
+          el.addEventListener('focus', function () {
+            readout.textContent = colTitles[idx];
+          });
+          el.addEventListener('blur', function () {
+            readout.textContent = picked < 0 ? restText : colTitles[picked];
+          });
+          el.addEventListener('keydown', function (e) {
+            var dir = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+            if (!dir) return;
+            if (e.preventDefault) e.preventDefault();
+            var next = colEls[(idx + dir + colEls.length) % colEls.length];
+            next.setAttribute('tabindex', '0');
+            if (next.focus) next.focus();
+          });
+        })(j);
+      }
+    })();
+    cols.addEventListener('mouseleave', function () {
+      readout.textContent = picked < 0 ? restText : colTitles[picked];
+    });
     // ONE clock on this chart. There used to be a second lane under the axis
     // marking when each sweep RAN, and it was measured pixel-exact against the
     // columns — but a sweep at 03:40 removes a post that arrived at 02:xx, so
