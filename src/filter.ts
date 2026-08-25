@@ -433,7 +433,9 @@ export type MatchablePost = {
   }
 }
 
-const altTexts = (record: MatchablePost): string[] => {
+// Exported so the whyNot panel can show each image's alt separately rather
+// than deriving one blob by slicing the haystack.
+export const altTexts = (record: MatchablePost): string[] => {
   const images = record.embed?.images ?? record.embed?.media?.images ?? []
   const parts = images.map((img) => img.alt ?? '')
   // app.bsky.embed.gallery is app.bsky.embed.images' successor and keeps its

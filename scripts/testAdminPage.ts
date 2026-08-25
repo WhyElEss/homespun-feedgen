@@ -331,13 +331,35 @@ const run = async () => {
       body = { ok: true, result: {
         uri: 'at://did:plc:a/app.bsky.feed.post/2', did: 'did:plc:a', handle: 'ann.example',
         createdAt: '2026-08-04T10:00:00.000Z', embed: 'none', isReply: false,
-        text: 'become a major solo artist', alt: '',
+        // Long enough that the old 400-character alt cap would have cut the
+        // second occurrence off, and capitalised differently in the alt so the
+        // highlighter can be caught normalising the post's own text.
+        text: 'become a major solo artist after the split',
+        alt: 'A sleeve photographed on a table. The Artist is credited on the back. ' +
+             ('Padding to run this alt past the four hundred characters the API ' +
+              'used to cut it at, because the word being explained is worth ' +
+              'nothing if the preview stops before it. ').repeat(3) +
+             'And one last mention of the artist at the very end.',
         feeds: [
           { key: 'coffee', displayName: 'Coffee', stored: false, wouldIndex: false,
             reason: 'excluded by "artist" (offtopic: 3D/models/art/etc) — /\\b(?:animation|3Dprint…/ on text|alt_text|link',
             includeMatch: 'coffee', includeTarget: 'text|alt_text',
             excludeMatch: 'artist', excludeComment: 'offtopic: 3D/models/art/etc',
             excludeTarget: 'text|alt_text|link', mutedByList: false, disagrees: false },
+        ] } }
+    }
+    else if (url === '/admin/whynot' && JSON.parse(init.body).input.includes('linkonly')) {
+      body = { ok: true, result: {
+        uri: 'at://did:plc:a/app.bsky.feed.post/3', did: 'did:plc:a', handle: 'ann.example',
+        createdAt: '2026-08-04T10:00:00.000Z', embed: 'app.bsky.embed.external',
+        isReply: false, text: 'a record I am rather pleased with', alt: '',
+        feeds: [
+          { key: 'coffee', displayName: 'Coffee', stored: false, wouldIndex: false,
+            reason: 'excluded by "shop.example" (storefronts) — /…/ on text|alt_text|link',
+            includeMatch: null, includeTarget: null,
+            excludeMatch: 'shop.example', excludeComment: 'storefronts',
+            excludeTarget: 'text|alt_text|link', excludePattern: null,
+            mutedByList: false, disagrees: false },
         ] } }
     }
     else if (url === '/admin/whynot') {
@@ -970,6 +992,36 @@ const run = async () => {
   // With a named rule there is nothing left for the expression to add, so it
   // is not shown at all — the rule name is what finds the block in the editor.
   check('the truncated expression is gone entirely', !blocked.includes('animation'))
+
+  // Explaining "matched on X" above a preview that stops before X, or does not
+  // show X at all, is a riddle with the answer torn off.
+  console.log('\n── the preview shows the whole post and marks the match in it')
+  const marks = walk(app).filter((e) => e.className === 'hitmark')
+  check('the matched word is marked in the post itself', marks.length >= 2,
+    `${marks.length} marks`)
+  check('...in the text and in the alt', blocked.includes('after the split') &&
+    blocked.includes('one last mention'))
+  // The alt used to be cut at 400 characters by the API, which put the second
+  // occurrence out of reach of any highlighting.
+  check('...with the alt no longer truncated at 400 characters',
+    blocked.includes('very end'))
+  // Marking must not rewrite the post: the slice is taken from the text, not
+  // the needle, so "The Artist" keeps its capital A.
+  check('...keeping the post\'s own capitalisation',
+    marks.some((m) => m.textContent === 'Artist') &&
+      marks.some((m) => m.textContent === 'artist'),
+    marks.map((m) => m.textContent).join(','))
+
+  // A pattern may target links, and the link haystack carries an embed's uri,
+  // title and description — none of which the preview shows.
+  whyInput.value = 'https://bsky.app/profile/ann.example/post/linkonly'
+  explain.handlers['click']()
+  await settle()
+  const linkonly = textOf(app)
+  check('a match that is only in the link card says so',
+    linkonly.includes('came from the link card'))
+  check('...and marks nothing in the preview',
+    walk(app).filter((e) => e.className === 'hitmark').length === 0)
 
   console.log('\n── the new-feed wizard')
   const newBtn = walk(app).find((e) => e.textContent === '+ New feed')!

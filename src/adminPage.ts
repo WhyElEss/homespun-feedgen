@@ -32,6 +32,7 @@ export const ADMIN_PAGE = `<!doctype html>
        4.5:1 that ordinary text needs. Dark ink on those same fills is 7.8:1
        and 8.4:1. Light theme is unchanged at 4.9:1 and 5.1:1. */
     --on-fill: #ffffff;
+    --mark: #fdf0a8;
     /* The chart keeps ONE palette in BOTH themes, by request. --accent and
        --warn flip with the theme, which is right for pills and buttons and
        wrong for a data series: the same bar should not change hue because the
@@ -60,6 +61,7 @@ export const ADMIN_PAGE = `<!doctype html>
       --bg: #17181a; --fg: #e8e8e6; --muted: #9a9a97; --line: #2c2e31;
       --card: #1e2022; --accent: #6ea8fe; --ok: #4ec27f; --warn: #e0b341; --bad: #ff6b5e;
       --on-fill: #0b1220;
+      --mark: #4a4020;
       --danger: #ff4d43;
     }
   }
@@ -132,6 +134,12 @@ export const ADMIN_PAGE = `<!doctype html>
      plain text beside the pill ("blocklist" is also the row's reason), so the
      colour is a second reading of a label that is written out anyway. */
   .pill.purged { color: var(--chart-removed); }
+  /* The same word, marked where it occurs in the post itself. Bold carries it
+     when a theme or a screenshot loses the tint; the tint is what makes it
+     findable in a 300-word post without reading every line. Contrast of the
+     body colour on these grounds: 14.9:1 light, 8.4:1 dark. */
+  .hitmark { font-weight: 700; background: var(--mark); color: var(--fg);
+          border-radius: 3px; padding: 0 .15rem; }
   /* The word that actually fired. It is the answer to "why is my post not in
      the feed", so it is the thing the eye should land on. */
   code.hit { background: var(--bg); border: 1px solid var(--line);
@@ -2654,9 +2662,51 @@ export const ADMIN_PAGE = `<!doctype html>
           kv('Reply', r.isReply ? 'yes — replies are always dropped' : 'no')
         ])]);
         body.appendChild(facts);
-        body.appendChild(h('p', { class: 'small', text: r.text || '(no text)' }));
-        if (r.alt) {
-          body.appendChild(h('p', { class: 'small muted', text: 'alt text: ' + r.alt }));
+
+        // Which feed's answer this panel is about, decided here rather than
+        // further down, because the preview underneath highlights ITS match.
+        var mine = null, others = [];
+        r.feeds.forEach(function (f) { if (f.key === key) mine = f; else others.push(f); });
+        // The exclude wins when there is one: it is the word that decided the
+        // outcome. The include is what got it as far as that gate.
+        var needle = mine ? (mine.excludeMatch || mine.includeMatch) : null;
+
+        // Saying "matched on X" under a preview that does not show X is a
+        // riddle with the answer torn off. Mark every occurrence in place.
+        var marked = 0;
+        function highlight(str, pin) {
+          var out = [];
+          var low = String(str).toLowerCase();
+          var want = String(pin || '').toLowerCase();
+          var at = 0, i;
+          while (want && (i = low.indexOf(want, at)) >= 0) {
+            if (i > at) out.push(document.createTextNode(str.slice(at, i)));
+            // The slice, not the needle: the post's own capitalisation stays.
+            out.push(h('strong', { class: 'hitmark', text: str.slice(i, i + want.length) }));
+            at = i + want.length;
+            marked++;
+          }
+          out.push(document.createTextNode(str.slice(at)));
+          return out;
+        }
+        function para(cls, prefix, str) {
+          var el = h('p', { class: cls }, []);
+          if (prefix) el.appendChild(document.createTextNode(prefix));
+          highlight(str, needle).forEach(function (n) { el.appendChild(n); });
+          return el;
+        }
+
+        body.appendChild(para('small', '', r.text || '(no text)'));
+        if (r.alt) body.appendChild(para('small muted', 'alt text: ', r.alt));
+        // A pattern may target text|alt_text|link, and the link haystack carries
+        // an embed's uri, title and description — none of which is on screen. If
+        // the word is not above, say where it came from instead of leaving the
+        // reader hunting for it.
+        if (needle && !marked) {
+          body.appendChild(h('p', { class: 'small muted', text:
+            'That word is not in the text or the alt text above — it came from ' +
+            'the link card (its address, title or description), which this ' +
+            'preview does not show.' }));
         }
 
         // Built as nodes, not as one string, so the two things worth reading —
@@ -2745,13 +2795,11 @@ export const ADMIN_PAGE = `<!doctype html>
               'arrived while the config was different.';
         }
 
-        // The feed being edited gets the whole answer. The others are a
-        // footnote: for feeds as unrelated as these, three lines of "no
-        // includePattern matched" every time is noise, and noise teaches you
-        // to stop reading the table.
-        var mine = null, others = [];
-        r.feeds.forEach(function (f) { if (f.key === key) mine = f; else others.push(f); });
-
+        // The feed being edited gets the whole answer (mine/others were split
+        // above, where the preview needed to know which feed it is highlighting
+        // for). The others are a footnote: for feeds as unrelated as these,
+        // three lines of "no includePattern matched" every time is noise, and
+        // noise teaches you to stop reading the table.
         if (mine) {
           var head = h('div', { class: 'row wrapx' }, [
             h('span', { class: 'pill ' + (mine.wouldIndex ? 'ok' : 'bad'),

@@ -6,6 +6,7 @@ import {
   getFeedKeys,
   getExcludeListUris,
   matchesFeedVerbose,
+  altTexts,
   buildHaystacks,
   MatchablePost,
 } from './filter'
@@ -173,7 +174,16 @@ export const explainPost = async (
     })
   }
 
-  const altOnly = hay['text|alt_text'].slice((record.text ?? '').length).trim()
+  // Full text and full alt, both uncapped. The alt used to be cut at 400
+  // characters and derived by slicing the haystack, which merged several
+  // images into one blob — and the preview is where the matched word has to be
+  // visible, so anything the cap hid was exactly the thing being asked about.
+  //
+  // Whitespace runs are collapsed on purpose. The needle the page highlights
+  // comes from a haystack that joins text and alt with newlines, so a match can
+  // span one; normalising both sides to single spaces lets a plain substring
+  // scan find it without the page having to reason about the join.
+  const collapse = (s: string) => s.replace(/\s+/g, ' ').trim()
   return {
     uri,
     did,
@@ -181,8 +191,8 @@ export const explainPost = async (
     createdAt: (record as any).createdAt ?? null,
     embed: record.embed?.$type ?? 'none',
     isReply: !!record.reply,
-    text: (record.text ?? '').replace(/\s+/g, ' '),
-    alt: altOnly.replace(/\s+/g, ' ').slice(0, 400),
+    text: collapse(record.text ?? ''),
+    alt: altTexts(record).map(collapse).filter(Boolean).join('  ·  '),
     feeds,
   }
 }
