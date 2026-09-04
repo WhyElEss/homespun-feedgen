@@ -5,20 +5,28 @@ import { toAtUri } from './adminResolve'
 import { clearLabCache } from './adminLab'
 import { getFeedKeys, getFeedConfig, loadFiltersOnce } from './filter'
 
-// "I don't want to see this post" — one link, one button, gone.
+// "I don't want to see this post" — resolve the link, look at what came back,
+// then delete it.
 //
 // Everything else on this box decides what a feed holds by RULE: a pattern, a
 // moderation list, a retention window. This is the one place that acts on a
 // single post because someone looked at it and did not want it there, and it
-// deliberately asks no further questions — no filter to edit, no measurement to
-// read, no reason to type.
+// asks nothing about WHY — no filter to edit, no measurement to read, no
+// reason to type.
 //
-// Three decisions worth knowing about:
+// TWO STEPS, and the first one is the check. inspectPost() answers "what is at
+// this link, and which feeds hold it" without touching anything; deletePost()
+// then removes exactly that. The page resolves first and sends back the at://
+// URI it was shown, so what gets deleted is what was on screen — not whatever
+// the field happens to contain a moment later. A confirmation dialog could not
+// have offered that: it asks before there is anything to look at.
+//
+// Three more decisions worth knowing about:
 //
 //   * it removes the post from EVERY feed on this box, not from the feed the
 //     page happens to have open. The object here is the post, not one feed's
 //     copy of it, and "gone from three of the four" is not what anyone means by
-//     delete. Which feeds it left is in the answer;
+//     delete. Which feeds hold it is on screen BEFORE the button is pressed;
 //   * it leaves a dump next to the database, exactly like purgePosts --uri, so
 //     the removal shows up on the Activity tab instead of being the one kind of
 //     removal with no trail;
@@ -33,22 +41,29 @@ const API = 'https://public.api.bsky.app'
 // anything a caller sets. The same trap admin.ts documents for the filters path.
 const dbPath = () => process.env.FEEDGEN_SQLITE_LOCATION ?? '/data/db.sqlite'
 
-export type DeletedFrom = {
+export type HeldBy = {
   key: string
   displayName: string | null
   indexedAt: string
 }
 
-export type DeleteResult = {
+export type PostTarget = {
   uri: string
   handle: string
   text: string
-  removed: number
-  feeds: DeletedFrom[]
+  // Whether the AppView still has it. False is not a refusal: the usual state
+  // of a post worth deleting, an hour later, is deleted upstream, and the row
+  // in this database still has to be removable.
+  exists: boolean
+  feeds: HeldBy[]
   // Feeds that pin this post. Deleting the row does not un-pin it: the pin is
   // config, hydrated on every request, so the post would keep appearing at the
   // top of that feed and the button would look broken.
   pinnedOn: string[]
+}
+
+export type DeleteResult = PostTarget & {
+  removed: number
   dump: string | null
 }
 
@@ -77,31 +92,33 @@ const writeDump = (rows: unknown[]): string | null => {
   }
 }
 
-// Best effort, and it must stay that way: the usual reason to delete a post is
-// that it is objectionable, and the usual state of an objectionable post an
-// hour later is deleted upstream. A row that the AppView will not return still
-// has to be removable.
-const describe = async (uri: string): Promise<{ handle: string; text: string }> => {
+// Best effort, and it must stay that way — see `exists` above.
+const describe = async (
+  uri: string,
+): Promise<{ handle: string; text: string; exists: boolean }> => {
   try {
     const res = await fetch(
       `${API}/xrpc/app.bsky.feed.getPosts?uris=${encodeURIComponent(uri)}`,
     )
-    if (!res.ok) return { handle: '', text: '' }
+    if (!res.ok) return { handle: '', text: '', exists: false }
     const p = ((await res.json()) as any).posts?.[0]
-    if (!p) return { handle: '', text: '' }
+    if (!p) return { handle: '', text: '', exists: false }
     return {
       handle: p.author?.handle ?? '',
       text: String(p.record?.text ?? '').replace(/\s+/g, ' '),
+      exists: true,
     }
   } catch {
-    return { handle: '', text: '' }
+    return { handle: '', text: '', exists: false }
   }
 }
 
-export const deletePost = async (
+// Step one: what is at this link. Reads only — nothing here changes anything,
+// which is what makes it safe to run on a blur.
+export const inspectPost = async (
   db: Database,
   input: string,
-): Promise<DeleteResult> => {
+): Promise<PostTarget> => {
   const uri = await toAtUri(input)
 
   if (getFeedKeys().length === 0) loadFiltersOnce()
@@ -113,10 +130,33 @@ export const deletePost = async (
     .where('uri', '=', uri)
     .execute()
 
-  const { handle, text } = await describe(uri)
+  const { handle, text, exists } = await describe(uri)
+  return {
+    uri,
+    handle,
+    text,
+    exists,
+    feeds: rows.map((r) => ({
+      key: r.feed,
+      displayName: getFeedConfig(r.feed)?.displayName ?? null,
+      indexedAt: r.indexedAt,
+    })),
+    pinnedOn,
+  }
+}
 
-  if (!rows.length) {
-    return { uri, handle, text, removed: 0, feeds: [], pinnedOn, dump: null }
+// Step two. Takes the same input as step one and inspects again rather than
+// trusting anything the caller carried over: the rows may have moved (retention
+// prunes, auto-purge sweeps) between the two presses, and the answer has to
+// describe what actually happened, not what was predicted.
+export const deletePost = async (
+  db: Database,
+  input: string,
+): Promise<DeleteResult> => {
+  const target = await inspectPost(db, input)
+
+  if (!target.feeds.length) {
+    return { ...target, removed: 0, dump: null }
   }
 
   // The dump is written BEFORE the delete, so a crash between the two leaves a
@@ -124,27 +164,24 @@ export const deletePost = async (
   // that is gone. `why` is one of the strings adminActivity reads as a manual
   // removal — keep the two in step.
   const dump = writeDump(
-    rows.map((r) => ({
-      uri,
-      indexedAt: r.indexedAt,
-      feed: r.feed,
-      handle: handle || '(not retrievable)',
-      text: text.slice(0, 80),
+    target.feeds.map((f) => ({
+      uri: target.uri,
+      indexedAt: f.indexedAt,
+      feed: f.key,
+      handle: target.handle || '(not retrievable)',
+      text: target.text.slice(0, 80),
       why: 'deleted by hand',
     })),
   )
 
-  await db.deleteFrom('post').where('uri', '=', uri).execute()
+  await db.deleteFrom('post').where('uri', '=', target.uri).execute()
 
   // The lab keeps a hydrated corpus per feed for ten minutes. Left alone, the
   // next "Count matches" would count a post that no longer exists.
   clearLabCache()
 
-  const feeds: DeletedFrom[] = rows.map((r) => ({
-    key: r.feed,
-    displayName: getFeedConfig(r.feed)?.displayName ?? null,
-    indexedAt: r.indexedAt,
-  }))
-  console.log(`admin: deleted ${uri} from ${feeds.map((f) => f.key).join(', ')}`)
-  return { uri, handle, text, removed: rows.length, feeds, pinnedOn, dump }
+  console.log(
+    `admin: deleted ${target.uri} from ${target.feeds.map((f) => f.key).join(', ')}`,
+  )
+  return { ...target, removed: target.feeds.length, dump }
 }

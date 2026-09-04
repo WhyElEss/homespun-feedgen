@@ -11,7 +11,7 @@ import express from 'express'
 import { createAdminRouter } from '../src/admin'
 import { createAdminAuth, hashPassword } from '../src/adminAuth'
 import { measureCandidate, seedCorpus, StoredPost } from '../src/adminLab'
-import { deletePost } from '../src/adminDelete'
+import { deletePost, inspectPost } from '../src/adminDelete'
 import { loadFiltersOnce, buildHaystacks, MatchablePost } from '../src/filter'
 import { createDb, migrateToLatest } from '../src/db'
 
@@ -69,6 +69,7 @@ const mount = async (writable: boolean, db?: any, delDb?: any) => {
       lab: db
         ? (feed, filters, refresh) => measureCandidate(db, feed, filters, { refresh })
         : undefined,
+      inspectPost: delDb ? (input) => inspectPost(delDb, input) : undefined,
       deletePost: delDb ? (input) => deletePost(delDb, input) : undefined,
     }),
   )
@@ -305,6 +306,10 @@ const run = async () => {
       const { call: ro, close: closeRo } = await mount(false, undefined, db)
       const res = await ro('/post/delete', { body: { input: TARGET } })
       check('a read-only box refuses to delete', res.status === 403)
+      // Refused at the FIRST step too: a Resolve that works in front of a
+      // Delete that cannot is a dead end with an encouraging button on it.
+      const look = await ro('/post/inspect', { body: { input: TARGET } })
+      check('...and refuses the look-up that precedes it', look.status === 403)
       check('...and nothing was removed', (await remaining()) === 4)
       closeRo()
     }
@@ -317,6 +322,19 @@ const run = async () => {
     const junk = await del('/post/delete', { body: { input: 'not a link' } })
     check('junk is refused with an instruction', junk.status === 400)
     check('...naming the shape it wants', String(junk.body.error).includes('bsky.app'))
+
+    // Step one, and the whole reason there are two: what is at this link, and
+    // which feeds would lose it. Reads only.
+    const seen = await del('/post/inspect', { body: { input: TARGET } })
+    check('inspect answers before anything is deleted', seen.status === 200)
+    check('...naming every feed that holds it',
+      seen.body.result.feeds.map((f: any) => f.key).sort().join() === 'coffee,tea',
+      JSON.stringify(seen.body.result.feeds.map((f: any) => f.key)))
+    check('...and it removed nothing', (await remaining()) === 4)
+
+    const pinnedFirst = await del('/post/inspect', { body: { input: PINNED } })
+    check('inspect flags a pin BEFORE the delete, not after',
+      pinnedFirst.body.result.pinnedOn.join() === 'tea')
 
     const gone = await del('/post/delete', { body: { input: TARGET } })
     check('the post is deleted', gone.status === 200 && gone.body.result.removed === 2)

@@ -2963,86 +2963,162 @@ export const ADMIN_PAGE = `<!doctype html>
       ]));
     }
 
-    // ── delete one post, unconditionally
+    // ── delete one post
     //
     // The only control on this page that acts on a single post rather than on a
-    // rule. Paste the link, press the button, it is gone from every feed on this
-    // box — no filter to edit, no measurement to read, nothing to save.
+    // rule. Two presses, and the first one is the check: Resolve says what is
+    // actually at that link and which feeds hold it, and Delete does not light
+    // up until it has answered.
     //
-    // NO CONFIRMATION DIALOG, and that is the request rather than an oversight.
-    // The dialog Save used to have was answered yes every time (see the note
-    // above the change list), and this action is one field and one button, both
-    // of which the operator has just looked at. What replaces the dialog is the
-    // answer AFTERWARDS: the deleted post's author and text are printed back,
-    // so a mis-paste is visible immediately instead of being confirmed blind.
+    // NOT a confirmation dialog, and the difference is the whole design. A
+    // dialog asks "are you sure?" before there is anything to be sure ABOUT —
+    // it can only quote back the string you typed, which is precisely the thing
+    // that might be wrong. The Save that used to have one was answered yes
+    // every time. Here the post is on screen, with its author, its text and the
+    // feeds it is in, BEFORE the red button is pressable at all.
+    //
+    // And what Delete sends is the resolved at:// URI, not the field: editing
+    // the field after resolving disables the button, so what leaves is always
+    // what was on screen.
     function renderDeletePost(root) {
       var input = h('input', { type: 'text',
         placeholder: 'https://bsky.app/profile/…/post/… — or an at:// URI' });
+      var findBtn = h('button', { text: 'Resolve' });
       var btn = h('button', { class: 'destroy', text: 'Delete' });
       var out = h('div', { class: 'msg', role: 'status' });
       var body = h('div', {}, []);
+      // The resolved target, and the only thing Delete will act on. Dropped the
+      // moment the field changes.
+      var found = null;
 
-      function go() {
+      function paint() {
+        var has = !!input.value.trim();
+        findBtn.disabled = !has;
+        // Visible and disabled rather than hidden, the same call as Remove pin:
+        // the shape of the operation — resolve, look, delete — has to be
+        // readable before anything is typed.
+        btn.disabled = !found || !found.feeds.length;
+      }
+      // Any edit invalidates the answer on screen. Without this, resolving one
+      // link and then pasting another would leave a red button armed against
+      // the post you were looking at a moment ago.
+      input.addEventListener('input', function () {
+        if (found) { found = null; body.innerHTML = ''; out.className = 'msg'; out.textContent = ''; }
+        paint();
+      });
+
+      function resolve() {
         var v = input.value.trim();
         if (!v) return;
-        btn.disabled = true; body.innerHTML = '';
-        out.className = 'msg'; out.textContent = 'Deleting…';
-        call('post/delete', { body: { input: v } }).then(function (r) {
+        findBtn.disabled = true; btn.disabled = true; body.innerHTML = '';
+        out.className = 'msg'; out.textContent = 'Looking it up…';
+        call('post/inspect', { body: { input: v } }).then(function (r) {
           return r.json().then(function (b) { return { status: r.status, body: b }; });
         }).then(function (res) {
-          btn.disabled = false;
           if (res.status !== 200) {
+            found = null; paint();
             out.className = 'msg bad'; out.textContent = res.body.error; return;
           }
-          // Cleared on success only: the field holds a link that is now spent,
-          // and leaving it there invites a second press that can only report
-          // "not in any feed" and read as a failure.
-          input.value = '';
-          show(res.body.result);
+          found = res.body.result;
+          // The field becomes the URI that was actually resolved, so what is on
+          // screen and what Delete will send cannot drift apart.
+          input.value = found.uri;
+          paint();
+          showFound(found);
         }).catch(function (e) {
-          btn.disabled = false;
+          found = null; paint();
           out.className = 'msg bad'; out.textContent = 'Network error: ' + e.message;
         });
       }
+
+      function go() {
+        if (!found) return;
+        var target = found.uri;
+        findBtn.disabled = true; btn.disabled = true;
+        out.className = 'msg'; out.textContent = 'Deleting…';
+        call('post/delete', { body: { input: target } }).then(function (r) {
+          return r.json().then(function (b) { return { status: r.status, body: b }; });
+        }).then(function (res) {
+          if (res.status !== 200) {
+            paint();
+            out.className = 'msg bad'; out.textContent = res.body.error; return;
+          }
+          // Cleared on success: the link is spent, and a second press could
+          // only report "not in any feed" and read as a failure.
+          found = null; input.value = ''; paint();
+          showGone(res.body.result);
+        }).catch(function (e) {
+          paint();
+          out.className = 'msg bad'; out.textContent = 'Network error: ' + e.message;
+        });
+      }
+      findBtn.addEventListener('click', resolve);
       btn.addEventListener('click', go);
-      input.addEventListener('keydown', function (e) { if (e.key === 'Enter') go(); });
+      // Enter resolves. It must never delete: the whole point of the pair is
+      // that the destructive half is a deliberate second press.
+      input.addEventListener('keydown', function (e) { if (e.key === 'Enter') resolve(); });
+      // Pasting a link and tabbing away resolves it without being asked, the
+      // same affordance the pin field has. An at:// URI already in place is
+      // left alone.
+      input.addEventListener('change', function () {
+        if (/^https?:/i.test(input.value.trim())) resolve();
+      });
 
-      function show(r) {
-        body.innerHTML = '';
-        var where = r.feeds.map(function (f) { return f.displayName || f.key; });
-        if (r.removed) {
-          out.className = 'msg ok';
-          out.textContent = 'Gone — removed from ' + where.join(', ') + '.';
-        } else {
-          // Not an error: the post simply was not here. Said plainly, because
-          // "nothing happened" and "it worked" must not look the same.
-          out.className = 'msg warn';
-          out.textContent = 'That post is not in any feed on this box — ' +
-            'nothing to delete. It may have been pruned already, or never matched.';
-        }
-
+      // Author, text and — the part a dialog could never show — which feeds
+      // actually hold it. "Am I about to remove more than I meant?" is answered
+      // here, before the button is live.
+      function card(r) {
         var kids = [h('dl', {}, [
-          kv('Author', r.handle ? '@' + r.handle : '(not retrievable — deleted upstream)'),
+          kv('Author', r.handle ? '@' + r.handle : '(not retrievable)'),
           kv('Post', r.uri)
         ])];
         if (r.text) kids.push(h('p', { class: 'small', text: r.text }));
-        if (r.removed) {
+        if (!r.exists) {
           kids.push(h('p', { class: 'small muted', text:
-            'Removed from ' + r.removed + (r.removed === 1 ? ' feed' : ' feeds') +
-            ' — it is out of the feed as soon as the next request is served. ' +
-            'Nothing re-reads old posts, so it stays out; only a cursor rewind, ' +
-            'which replays the firehose, could bring it back.' }));
+            'Bluesky no longer has this post — it was deleted upstream, or its ' +
+            'author blocks the viewer. The row in this database is still here ' +
+            'and can still be removed.' }));
         }
-        // The pin is config, not a row, so deleting the row does not un-pin it
-        // and the post would keep appearing at the top of that feed. Whoever
-        // pressed this would reasonably call that broken.
         if (r.pinnedOn && r.pinnedOn.length) {
           kids.push(h('p', { class: 'small warn-text', text:
             'This post is PINNED on ' + r.pinnedOn.join(', ') + '. A pin is ' +
-            'config, not a stored row, so it will keep appearing at the top of ' +
-            'that feed until you un-pin it above.' }));
+            'config, not a stored row, so deleting it here will NOT take it off ' +
+            'the top of that feed — un-pin it above as well.' }));
         }
-        body.appendChild(h('div', { class: 'card pad' }, kids));
+        return h('div', { class: 'card pad' }, kids);
+      }
+      function feedNames(r) {
+        return r.feeds.map(function (f) { return f.displayName || f.key; });
+      }
+
+      function showFound(r) {
+        body.innerHTML = '';
+        if (r.feeds.length) {
+          out.className = 'msg';
+          out.textContent = 'In ' + r.feeds.length +
+            (r.feeds.length === 1 ? ' feed: ' : ' feeds: ') + feedNames(r).join(', ') +
+            '. Delete removes it from ' + (r.feeds.length === 1 ? 'it.' : 'all of them.');
+        } else {
+          // Not an error: the post simply is not here. Said plainly, because
+          // "nothing to do" and "ready to go" must not look the same — and the
+          // button stays dead.
+          out.className = 'msg warn';
+          out.textContent = 'Not in any feed on this box — nothing to delete. ' +
+            'It may have been pruned already, or never matched.';
+        }
+        body.appendChild(card(r));
+      }
+
+      function showGone(r) {
+        body.innerHTML = '';
+        out.className = 'msg ok';
+        out.textContent = 'Gone — removed from ' + feedNames(r).join(', ') + '.';
+        var kids = [card(r)];
+        kids.push(h('p', { class: 'small muted', text:
+          'Out of the feed as soon as the next request is served. Nothing ' +
+          're-reads old posts, so it stays out; only a cursor rewind, which ' +
+          'replays the firehose, could bring it back.' }));
+        body.appendChild(h('div', {}, kids));
 
         // The panel below may be showing this very post, with "in the database"
         // next to it. Correct it in place rather than leaving an answer on
@@ -3055,15 +3131,18 @@ export const ADMIN_PAGE = `<!doctype html>
         }
       }
 
+      paint();
       root.appendChild(h('h2', { text: 'Delete a post' }));
       root.appendChild(h('div', { class: 'card pad' }, [
-        h('div', { class: 'row wrapx' }, [input, btn]),
+        h('div', { class: 'row wrapx' }, [input, findBtn, btn]),
         h('p', { class: 'small muted', text:
-          'Removes this post from every feed on this box, immediately and ' +
-          'without asking anything else — no filter is touched and nothing ' +
-          'needs saving. It is not undoable, and it does not stop a similar ' +
-          'post arriving tomorrow: that is what a filter or the moderation ' +
-          'list is for. The removal is recorded on the Activity tab.' }),
+          'Resolve first: it shows whose post it is, what it says and which ' +
+          'feeds hold it, so you can see you pasted the right link before ' +
+          'anything happens. Delete then removes it from every one of those ' +
+          'feeds immediately — no filter is touched and nothing needs saving. ' +
+          'It is not undoable, and it does not stop a similar post arriving ' +
+          'tomorrow: that is what a filter or the moderation list is for. The ' +
+          'removal is recorded on the Activity tab.' }),
         out, body
       ]));
     }

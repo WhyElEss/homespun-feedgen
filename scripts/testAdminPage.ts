@@ -248,6 +248,7 @@ const run = async () => {
   const resolvedLists: string[] = []
   const probes: any[] = []
   const deletes: string[] = []
+  const inspects: string[] = []
   const measures: any[] = []
   const published: any[] = []
   let totpBegins = 0
@@ -326,17 +327,23 @@ const run = async () => {
         note: 'Counted over the posts this feed already holds.',
         samples: [{ uri: 'at://1', handle: 'ann', text: 'fresh coffee', matched: 'coffee' }] } }
     }
-    else if (url === '/admin/post/delete') {
+    else if (url === '/admin/post/inspect' || url === '/admin/post/delete') {
       const asked = JSON.parse(init.body).input
-      deletes.push(asked)
-      body = asked.includes('nothere')
-        ? { ok: true, result: { uri: 'at://did:plc:a/app.bsky.feed.post/9', handle: '',
-            text: '', removed: 0, feeds: [], pinnedOn: [], dump: null } }
-        : { ok: true, result: { uri: 'at://did:plc:a/app.bsky.feed.post/2',
-            handle: 'ann.example', text: 'a post nobody wanted', removed: 2,
-            feeds: [{ key: 'coffee', displayName: 'Coffee', indexedAt: '2026-08-04T10:00:00.000Z' },
-                    { key: 'radio', displayName: 'Radio', indexedAt: '2026-08-04T10:00:00.000Z' }],
-            pinnedOn: asked.includes('pinned') ? ['radio'] : [],
+      ;(url === '/admin/post/delete' ? deletes : inspects).push(asked)
+      const empty = asked.includes('nothere')
+      const target = {
+        uri: empty
+          ? 'at://did:plc:a/app.bsky.feed.post/9'
+          : 'at://did:plc:a/app.bsky.feed.post/2',
+        handle: 'ann.example', text: 'a post nobody wanted', exists: true,
+        feeds: empty ? [] : [
+          { key: 'coffee', displayName: 'Coffee', indexedAt: '2026-08-04T10:00:00.000Z' },
+          { key: 'radio', displayName: 'Radio', indexedAt: '2026-08-04T10:00:00.000Z' }],
+        pinnedOn: asked.includes('pinned') ? ['radio'] : [],
+      }
+      body = url === '/admin/post/inspect'
+        ? { ok: true, result: target }
+        : { ok: true, result: { ...target, removed: target.feeds.length,
             dump: '/data/purged-20260904T101500Z.json' } }
     }
     else if (url === '/admin/whynot' && JSON.parse(init.body).input.includes('blocked')) {
@@ -1068,8 +1075,8 @@ const run = async () => {
   check('...and marks nothing in the preview',
     walk(app).filter((e) => e.className === 'hitmark').length === 0)
 
-  // One field, one button, no dialog — so the guarantees have to come from
-  // what it does before and after the call, not from a confirmation.
+  // Resolve, look, delete. The guarantee is not a dialog — it is that the post
+  // is on screen, with the feeds holding it, before the red button is live.
   console.log('\n── Delete a post')
   const delBtn = walk(panelOf('lab')).find((e) => e.textContent === 'Delete')!
   check('the button is on the Lab tab', !!delBtn)
@@ -1082,43 +1089,80 @@ const run = async () => {
   const labOrder = textOf(panelOf('lab'))
   check('...among the writing controls, ahead of the diagnostics',
     labOrder.indexOf('Delete a post') < labOrder.indexOf('Why is this post (not) in a feed?'))
-  check('...saying it touches no filter and needs no save',
-    labOrder.includes('no filter is touched'))
+  check('...telling you to resolve first, and why',
+    labOrder.includes('Resolve first') && labOrder.includes('right link'))
 
-  const delField = delBtn.parent!.children[0]
+  const delRow = delBtn.parent!
+  const delField = delRow.children[0]
+  const delResolve = delRow.children[1]
+  check('Resolve sits between the field and Delete', delResolve.textContent === 'Resolve')
+  // Visible and disabled, not hidden: the shape of the operation has to be
+  // readable before anything is typed. Same call as Remove pin.
+  check('nothing is armed on an empty field',
+    delBtn.disabled === true && delResolve.disabled === true)
+
   const beforeDeletes = deletes.length
-  delField.value = '   '
-  delBtn.handlers['click']()
-  await settle()
-  check('an empty field deletes nothing', deletes.length === beforeDeletes)
-
+  const beforeInspects = inspects.length
   delField.value = 'https://bsky.app/profile/ann.example/post/2'
+  delField.handlers['input']()
+  check('typing arms Resolve and nothing else',
+    delResolve.disabled === false && delBtn.disabled === true)
   delBtn.handlers['click']()
   await settle()
-  check('...a pasted link is sent as typed',
-    deletes[beforeDeletes] === 'https://bsky.app/profile/ann.example/post/2')
-  const afterDelete = textOf(panelOf('lab'))
-  check('...and the answer names every feed it left',
-    afterDelete.includes('Coffee') && afterDelete.includes('Radio'))
-  // What stands in for a confirmation dialog: the post is described back, so a
-  // mis-paste is visible immediately instead of being confirmed blind.
-  check('...naming the author it actually deleted', afterDelete.includes('@ann.example'))
-  check('...and quoting the post', afterDelete.includes('a post nobody wanted'))
+  check('...so Delete cannot fire before anything has been looked up',
+    deletes.length === beforeDeletes)
+
+  delResolve.handlers['click']()
+  await settle()
+  check('Resolve asks about the pasted link', inspects[beforeInspects] === 'https://bsky.app/profile/ann.example/post/2')
+  check('...without deleting anything', deletes.length === beforeDeletes)
+  const looked = textOf(panelOf('lab'))
+  // The three things a confirmation dialog cannot show, because it is asked
+  // before there is anything to look at.
+  check('...naming the author', looked.includes('@ann.example'))
+  check('...quoting the post', looked.includes('a post nobody wanted'))
+  check('...and saying which feeds would lose it',
+    looked.includes('Coffee') && looked.includes('Radio'))
+  check('...which is when Delete becomes live', delBtn.disabled === false)
+  check('the field now holds the URI that was actually resolved',
+    delField.value === 'at://did:plc:a/app.bsky.feed.post/2')
+
+  // The failure this pair exists to prevent: resolve one post, paste another,
+  // press the red button. Editing the field must disarm it.
+  delField.value = 'https://bsky.app/profile/ann.example/post/somethingelse'
+  delField.handlers['input']()
+  check('editing the field after resolving disarms Delete', delBtn.disabled === true)
+  check('...and takes the stale answer off screen',
+    !textOf(panelOf('lab')).includes('a post nobody wanted'))
+
+  delResolve.handlers['click']()
+  await settle()
+  delBtn.handlers['click']()
+  await settle()
+  check('Delete sends the RESOLVED uri, never the raw field',
+    deletes[beforeDeletes] === 'at://did:plc:a/app.bsky.feed.post/2',
+    deletes[beforeDeletes])
+  check('...and says where it went from', textOf(panelOf('lab')).includes('Gone'))
   check('the field is cleared, so the spent link cannot be sent twice',
     delField.value === '')
+  check('...leaving nothing armed', delBtn.disabled === true)
 
   delField.value = 'https://bsky.app/profile/ann.example/post/nothere'
-  delBtn.handlers['click']()
+  delField.handlers['input']()
+  delResolve.handlers['click']()
   await settle()
   const missed = walk(panelOf('lab')).find((e) =>
-    (e.textContent || '').includes('not in any feed on this box'))!
-  check('a post that was not there says so', !!missed)
+    (e.textContent || '').includes('Not in any feed on this box'))!
+  check('a post that is not here says so on resolve', !!missed)
   check('...as a warning, not as a success', missed.className.includes('warn'))
+  check('...and Delete stays dead — there is nothing to delete',
+    delBtn.disabled === true)
 
   delField.value = 'https://bsky.app/profile/ann.example/post/pinned'
-  delBtn.handlers['click']()
+  delField.handlers['input']()
+  delResolve.handlers['click']()
   await settle()
-  check('deleting a PINNED post warns that the pin still shows it',
+  check('a PINNED post is flagged BEFORE it is deleted, not after',
     textOf(panelOf('lab')).includes('PINNED on radio'))
 
   console.log('\n── the new-feed wizard')

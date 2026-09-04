@@ -87,8 +87,11 @@ export type AdminRouterOptions = {
   whyNot?: (input: string) => Promise<unknown>
   // When present, POST /lab/probe is served from it.
   probe?: (feed: string, probe: unknown) => Promise<unknown>
-  // When present, POST /post/delete is served from it. Gated on `writable` as
-  // well: it is the only route here that changes the DATABASE.
+  // When present, POST /post/inspect and POST /post/delete are served from
+  // them. Both gated on `writable`: the inspection exists only to be the step
+  // before the delete, and offering it where the delete is refused would be a
+  // dead end with an encouraging button on it.
+  inspectPost?: (input: string) => Promise<unknown>
   deletePost?: (input: string) => Promise<unknown>
   // Whose repository the feed records live in, and which service they point at.
   // Without it the record-editing routes are not mounted at all.
@@ -626,34 +629,45 @@ export const createAdminRouter = (opts: AdminRouterOptions = {}): express.Router
     })
   }
 
-  // Remove one post from this box's feeds, on sight, with no filter involved.
-  // Unconditional by design: the operator has looked at the post and decided,
-  // and asking them to justify it to a config file is the thing this route
-  // exists to skip.
-  if (opts.deletePost) {
-    const del = opts.deletePost
-    router.post('/post/delete', guard, async (req, res) => {
-      // Same rule as every other write: a standby's database is its own, so a
-      // delete there would remove the post from the copy nobody is reading
-      // while leaving it in the one they are.
-      if (!opts.writable) {
-        res.status(403).json({
-          ok: false,
-          error: 'this box is read-only — delete the post on the primary.',
-        })
-        return
-      }
-      const input = String((req.body ?? {}).input ?? '').trim()
-      if (!input) {
-        res.status(400).json({ ok: false, error: 'paste a post link first' })
-        return
-      }
-      try {
-        res.json({ ok: true, result: await del(input) })
-      } catch (err: any) {
-        res.status(400).json({ ok: false, error: String(err?.message ?? err) })
-      }
-    })
+  // Remove one post from this box's feeds, with no filter involved. The
+  // operator has looked at the post and decided; asking them to justify it to a
+  // config file is what these two routes exist to skip.
+  //
+  // TWO ROUTES, and the pair is the point. /post/inspect says what is at the
+  // link and which feeds hold it; /post/delete removes it. The page will not
+  // enable its button until the first has answered, so the thing being deleted
+  // has been on screen — which is more than a confirmation dialog can offer,
+  // since a dialog asks before there is anything to look at.
+  if (opts.inspectPost || opts.deletePost) {
+    // Same rule as every other write: a standby's database is its own, so a
+    // delete there would remove the post from the copy nobody is reading while
+    // leaving it in the one they are.
+    const postRoute = (
+      path: string,
+      run: (input: string) => Promise<unknown>,
+    ) =>
+      router.post(path, guard, async (req, res) => {
+        if (!opts.writable) {
+          res.status(403).json({
+            ok: false,
+            error: 'this box is read-only — delete the post on the primary.',
+          })
+          return
+        }
+        const input = String((req.body ?? {}).input ?? '').trim()
+        if (!input) {
+          res.status(400).json({ ok: false, error: 'paste a post link first' })
+          return
+        }
+        try {
+          res.json({ ok: true, result: await run(input) })
+        } catch (err: any) {
+          res.status(400).json({ ok: false, error: String(err?.message ?? err) })
+        }
+      })
+
+    if (opts.inspectPost) postRoute('/post/inspect', opts.inspectPost)
+    if (opts.deletePost) postRoute('/post/delete', opts.deletePost)
   }
 
   if (opts.lab) {
