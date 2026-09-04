@@ -2999,6 +2999,9 @@ export const ADMIN_PAGE = `<!doctype html>
       var findBtn = h('button', { text: 'Resolve' });
       var btn = h('button', { class: 'destroy', text: 'Delete' });
       var msg = h('div', { class: 'msg', role: 'status' });
+      // Holds the other-feeds fold-out and nothing else. Cleared with the
+      // answer it belongs to.
+      var body = h('div', {}, []);
       var found = null;
 
       function paint() {
@@ -3009,7 +3012,7 @@ export const ADMIN_PAGE = `<!doctype html>
         msg.className = 'msg' + (cls ? ' ' + cls : '');
         msg.textContent = t;
       }
-      function forget() { found = null; say(''); paint(); }
+      function forget() { found = null; say(''); body.innerHTML = ''; paint(); }
       input.addEventListener('input', function () { found ? forget() : paint(); });
       // The answer was about the feed you just left.
       resetDelete = function () { input.value = ''; forget(); };
@@ -3026,29 +3029,75 @@ export const ADMIN_PAGE = `<!doctype html>
         });
       }
 
+      // The other feeds, in whyNot's shape and by its rule: a fold-out list,
+      // never a sentence in the answer, and it opens by itself only when there
+      // is something in it worth seeing — here, another feed holding the same
+      // post. This button does not touch any of them; switching the picker and
+      // repeating is how they are dealt with, and the list is where you find
+      // out whether that is even needed.
+      function showOthers(r) {
+        body.innerHTML = '';
+        var others = r.others || [];
+        if (!others.length) return;
+        var held = others.filter(function (f) { return f.stored; });
+        var open = held.length > 0;
+        var table = h('div', {}, []);
+        var toggle = h('button', { class: 'linkish' });
+        function draw() {
+          table.innerHTML = '';
+          toggle.textContent = (open ? '− ' : '+ ') + 'other feeds (' + others.length + ')' +
+            (held.length
+              ? ' — ' + held.length + (held.length === 1 ? ' also has it' : ' also have it')
+              : ' — none has it');
+          if (!open) return;
+          var rows = others.map(function (f) {
+            return h('tr', {}, [
+              h('td', { class: 'mono small', text: f.key }),
+              h('td', { class: 'small', text: f.displayName || '—' }),
+              h('td', { class: 'small', text: f.stored ? 'yes' : 'no' })
+            ]);
+          });
+          table.appendChild(h('div', { class: 'card wrap' }, [
+            h('table', {}, [
+              h('thead', {}, [h('tr', {}, [
+                h('th', { text: 'rkey' }), h('th', { text: 'Feed' }),
+                h('th', { text: 'In DB' })])]),
+              h('tbody', {}, rows)])]));
+        }
+        toggle.addEventListener('click', function () { open = !open; draw(); });
+        body.appendChild(h('div', { class: 'toolbar' }, [toggle]));
+        body.appendChild(table);
+        draw();
+      }
+
       function resolve() {
         if (!input.value.trim()) return;
         say('Looking it up…');
+        body.innerHTML = '';
         post('post/inspect', { feed: key, input: input.value.trim() }, function (r) {
           found = r;
           // What is on screen and what Delete will send cannot drift apart.
           input.value = r.uri;
           paint();
           var who = r.handle ? '@' + r.handle : '(no longer on Bluesky)';
-          if (!r.stored) { say(who + ' — not in this feed, nothing to delete.', 'warn'); return; }
-          say(who + (r.text ? ' — ' + r.text : ''));
+          if (!r.stored) say(who + ' — not in this feed, nothing to delete.', 'warn');
+          else say(who + (r.text ? ' — ' + r.text : ''));
           // A pin is config, not a stored row: delete this and it stays at the
           // top of the feed anyway. Said before the press, not after.
-          if (r.pinnedHere) say(who + ' — PINNED here, so deleting it will not ' +
-            'take it off the top of the feed. Un-pin it above as well.', 'warn');
+          if (r.stored && r.pinnedHere) say(who + ' — PINNED here, so deleting it ' +
+            'will not take it off the top of the feed. Un-pin it above as well.', 'warn');
+          showOthers(r);
         });
       }
       function go() {
         if (!found) return;
         say('Deleting…');
-        post('post/delete', { feed: found.feed, input: found.uri }, function () {
+        post('post/delete', { feed: found.feed, input: found.uri }, function (r) {
           found = null; input.value = ''; paint();
           say('Deleted.', 'ok');
+          // Redrawn, not left standing: the row this feed held is gone and the
+          // others are untouched, which is exactly what the list now shows.
+          showOthers(r);
         });
       }
       findBtn.addEventListener('click', resolve);
@@ -3068,7 +3117,7 @@ export const ADMIN_PAGE = `<!doctype html>
           'Resolve shows whose post it is and what it says, so you can check ' +
           'the link first. Delete then removes it — immediately, and there is ' +
           'no undo.' }),
-        msg
+        msg, body
       ]));
     }
 

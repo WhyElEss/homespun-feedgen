@@ -345,12 +345,13 @@ const run = async () => {
     check('inspect answers before anything is deleted', seen.status === 200)
     check('...for the feed it was asked about', seen.body.result.feed === 'coffee')
     check('...saying that feed holds it', seen.body.result.stored === true)
-    // Deliberately silent about the other feeds holding the same post: the
-    // whyNot panel answers that, per feed, and this button does not.
-    check('...and says nothing about any other feed',
-      !JSON.stringify(seen.body.result).includes('tea') &&
-        !JSON.stringify(seen.body.result).includes('Tea'),
-      JSON.stringify(seen.body.result))
+    // The other feeds come back as a LIST for the fold-out, never as prose in
+    // the verdict — whyNot's shape, applied here on the user's instruction.
+    check('...listing every other feed for the fold-out',
+      seen.body.result.others.map((f: any) => f.key).join() === 'tea',
+      JSON.stringify(seen.body.result.others))
+    check('...saying which of them also holds the post',
+      seen.body.result.others[0]?.stored === true)
     check('...having removed nothing', (await remaining()) === 4)
 
     const pinnedFirst = await del('/post/inspect', { body: { feed: 'tea', input: PINNED } })
@@ -391,6 +392,8 @@ const run = async () => {
     check('...and writes no dump for a no-op', again.body.result.dump === null)
     check('...and the copy in the other feed is STILL there',
       (await feedsHolding(TARGET)).join() === 'tea')
+    check('...which the fold-out list keeps reporting',
+      again.body.result.others.some((f: any) => f.key === 'tea' && f.stored))
 
     // Deleting it from the other feed is a separate, deliberate act — which is
     // the whole point of the scoping.

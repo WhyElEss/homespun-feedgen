@@ -10,9 +10,11 @@ import { getFeedKeys, getFeedConfig, loadFiltersOnce } from './filter'
 //
 // Scoped to the feed the page has open, like every control on that page. The
 // feed is passed in; the row it removes is that feed's copy and nothing else.
-// Whether other feeds hold the same post is not this button's business and is
-// deliberately not reported — the whyNot panel answers that question, per feed,
-// for anyone who wants it.
+//
+// The other feeds are reported the way whyNot reports them and no other way: a
+// list you can unfold, never a sentence in the answer. Same principle too — it
+// opens by itself only when there is something in it worth seeing, which here
+// means another feed is holding the same post.
 //
 // Two steps: inspectPost() says what is at the link without touching anything,
 // deletePost() removes the row. The page resolves first and sends back the
@@ -40,6 +42,10 @@ export type PostTarget = {
   // Is it in that feed right now. The only thing the button acts on.
   stored: boolean
   indexedAt: string | null
+  // Every OTHER feed on this box and whether it holds the same post. For the
+  // fold-out list, which is the only place any of them is mentioned. The button
+  // does not touch them.
+  others: { key: string; displayName: string | null; stored: boolean }[]
   // Does this feed pin it. Deleting the row does not un-pin it — the pin is
   // config, hydrated on every request — so the post would stay at the top of
   // the feed and the button would look broken.
@@ -105,12 +111,13 @@ export const inspectPost = async (
   if (!cfg) throw new Error(`feed "${feed}" is not in the live config`)
 
   const uri = await toAtUri(input)
-  const row = await db
+  const rows = await db
     .selectFrom('post')
-    .select(['indexedAt'])
+    .select(['feed', 'indexedAt'])
     .where('uri', '=', uri)
-    .where('feed', '=', feed)
-    .executeTakeFirst()
+    .execute()
+  const row = rows.find((r) => r.feed === feed)
+  const storedIn = new Set(rows.map((r) => r.feed))
 
   const { handle, text, exists } = await describe(uri)
   return {
@@ -121,6 +128,16 @@ export const inspectPost = async (
     feed,
     stored: !!row,
     indexedAt: row?.indexedAt ?? null,
+    // Every other feed the box serves, not only the ones holding it: "three
+    // feeds, none of them has it" is an answer, and a list that appears and
+    // disappears depending on the result is harder to read than a fixed one.
+    others: getFeedKeys()
+      .filter((k) => k !== feed)
+      .map((k) => ({
+        key: k,
+        displayName: getFeedConfig(k)?.displayName ?? null,
+        stored: storedIn.has(k),
+      })),
     pinnedHere: cfg.pinnedPost === uri,
   }
 }

@@ -339,6 +339,11 @@ const run = async () => {
         feed: sent.feed,
         stored: !empty,
         indexedAt: empty ? null : '2026-08-04T10:00:00.000Z',
+        others: sent.feed === 'coffee'
+          ? [{ key: 'radio', displayName: 'Radio', stored: !empty },
+             { key: 'plain', displayName: null, stored: false }]
+          : [{ key: 'coffee', displayName: 'Coffee', stored: false },
+             { key: 'plain', displayName: null, stored: false }],
         pinnedHere: String(sent.input).includes('pinned'),
       }
       body = url === '/admin/post/inspect'
@@ -1097,7 +1102,7 @@ const run = async () => {
     (e.textContent || '').indexOf('Resolve shows whose post it is') === 0)!
   check('...over help that is one line, not a paragraph',
     !!delHelp && delHelp.textContent.length < 200, String(delHelp.textContent.length))
-  check('...saying nothing about other feeds',
+  check('...saying nothing about other feeds in prose',
     !delHelp.textContent.includes('feeds') && !labOrder.includes('also stored in'))
 
   const delRow = delBtn.parent!
@@ -1133,6 +1138,25 @@ const run = async () => {
   check('the field now holds the URI that was actually resolved',
     delField.value === 'at://did:plc:a/app.bsky.feed.post/2')
 
+  // The other feeds are reported the way whyNot reports them and no other way:
+  // a fold-out list, opened by itself only when there is something in it.
+  const othersToggle = walk(panelOf('lab')).find((e) =>
+    (e.textContent || '').indexOf('other feeds (2)') >= 0)!
+  check('the other feeds are a fold-out list, not a sentence', !!othersToggle)
+  check('...counting them, and saying how many also have the post',
+    othersToggle.textContent.includes('1 also has it'), othersToggle.textContent)
+  check('...open already, because one of them does', othersToggle.textContent.indexOf('−') === 0)
+  // Scoped to this card: the whyNot panel below has a table of its own.
+  const othersBox = othersToggle.parent!.parent!
+  const othersRows = () => walk(othersBox).filter((e) => e.tagName === 'TR').length
+  check('...listing every other feed, held or not', othersRows() === 3)
+  check('...with the same columns whyNot uses',
+    walk(othersBox).some((e) => e.tagName === 'TH' && e.textContent === 'In DB'))
+  othersToggle.handlers['click']()
+  check('...and it folds away on a click',
+    othersToggle.textContent.indexOf('+') === 0 && othersRows() === 0)
+  othersToggle.handlers['click']()
+
   // Resolve one post, paste another, press the red button. Editing must disarm.
   delField.value = 'https://bsky.app/profile/ann.example/post/somethingelse'
   delField.handlers['input']()
@@ -1163,6 +1187,13 @@ const run = async () => {
   check('a post this feed does not hold says so on resolve', !!missed)
   check('...as a warning, not as a success', missed.className.includes('warn'))
   check('...and Delete stays dead', delBtn.disabled === true)
+  // Nothing else has it either, so the list stays shut rather than opening on
+  // an answer of "no" three times over.
+  const shutToggle = walk(panelOf('lab')).find((e) =>
+    (e.textContent || '').indexOf('other feeds (2)') >= 0)!
+  check('...and the other-feeds list stays folded when none of them has it',
+    shutToggle.textContent.indexOf('+') === 0 &&
+      shutToggle.textContent.includes('none has it'), shutToggle.textContent)
 
   delField.value = 'https://bsky.app/profile/ann.example/post/pinned'
   delField.handlers['input']()
