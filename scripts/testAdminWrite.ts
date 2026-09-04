@@ -69,8 +69,8 @@ const mount = async (writable: boolean, db?: any, delDb?: any) => {
       lab: db
         ? (feed, filters, refresh) => measureCandidate(db, feed, filters, { refresh })
         : undefined,
-      inspectPost: delDb ? (input) => inspectPost(delDb, input) : undefined,
-      deletePost: delDb ? (input) => deletePost(delDb, input) : undefined,
+      inspectPost: delDb ? (feed, input) => inspectPost(delDb, feed, input) : undefined,
+      deletePost: delDb ? (feed, input) => deletePost(delDb, feed, input) : undefined,
     }),
   )
   const server = app.listen(0, '127.0.0.1')
@@ -301,14 +301,18 @@ const run = async () => {
     await db.insertInto('post').values(rows).execute()
     const remaining = async () =>
       (await db.selectFrom('post').select(['uri', 'feed']).execute()).length
+    const feedsHolding = async (uri: string) =>
+      (await db.selectFrom('post').select(['feed']).where('uri', '=', uri).execute())
+        .map((r) => r.feed)
+        .sort()
 
     {
       const { call: ro, close: closeRo } = await mount(false, undefined, db)
-      const res = await ro('/post/delete', { body: { input: TARGET } })
+      const res = await ro('/post/delete', { body: { feed: 'coffee', input: TARGET } })
       check('a read-only box refuses to delete', res.status === 403)
       // Refused at the FIRST step too: a Resolve that works in front of a
       // Delete that cannot is a dead end with an encouraging button on it.
-      const look = await ro('/post/inspect', { body: { input: TARGET } })
+      const look = await ro('/post/inspect', { body: { feed: 'coffee', input: TARGET } })
       check('...and refuses the look-up that precedes it', look.status === 403)
       check('...and nothing was removed', (await remaining()) === 4)
       closeRo()
@@ -316,42 +320,55 @@ const run = async () => {
 
     const { call: del, close: closeDel } = await mount(true, undefined, db)
 
-    const empty = await del('/post/delete', { body: { input: '   ' } })
+    const noFeed = await del('/post/delete', { body: { input: TARGET } })
+    check('a delete with no feed is refused, never guessed at', noFeed.status === 400)
+    check('...saying what is missing', String(noFeed.body.error).includes('feed'))
+
+    const wrongFeed = await del('/post/inspect', { body: { feed: 'nope', input: TARGET } })
+    check('a feed that is not in the config is an error', wrongFeed.status === 400)
+
+    const empty = await del('/post/delete', { body: { feed: 'coffee', input: '   ' } })
     check('an empty field is refused', empty.status === 400)
 
-    const junk = await del('/post/delete', { body: { input: 'not a link' } })
+    const junk = await del('/post/delete', { body: { feed: 'coffee', input: 'not a link' } })
     check('junk is refused with an instruction', junk.status === 400)
     check('...naming the shape it wants', String(junk.body.error).includes('bsky.app'))
 
     // Step one, and the whole reason there are two: what is at this link, and
-    // which feeds would lose it. Reads only.
-    const seen = await del('/post/inspect', { body: { input: TARGET } })
+    // does THIS feed hold it. Reads only.
+    const seen = await del('/post/inspect', { body: { feed: 'coffee', input: TARGET } })
     check('inspect answers before anything is deleted', seen.status === 200)
-    check('...naming every feed that holds it',
-      seen.body.result.feeds.map((f: any) => f.key).sort().join() === 'coffee,tea',
-      JSON.stringify(seen.body.result.feeds.map((f: any) => f.key)))
-    check('...and it removed nothing', (await remaining()) === 4)
+    check('...for the feed it was asked about', seen.body.result.feed === 'coffee')
+    check('...saying that feed holds it', seen.body.result.stored === true)
+    // The scoping rule made visible: the post is in tea as well, and the answer
+    // has to say so without implying the button reaches there.
+    check('...and naming the OTHER feeds as untouched',
+      seen.body.result.alsoIn.join() === 'Tea',
+      JSON.stringify(seen.body.result.alsoIn))
+    check('...having removed nothing', (await remaining()) === 4)
 
-    const pinnedFirst = await del('/post/inspect', { body: { input: PINNED } })
+    const pinnedFirst = await del('/post/inspect', { body: { feed: 'tea', input: PINNED } })
     check('inspect flags a pin BEFORE the delete, not after',
-      pinnedFirst.body.result.pinnedOn.join() === 'tea')
+      pinnedFirst.body.result.pinnedHere === true)
+    const pinnedElsewhere = await del('/post/inspect', { body: { feed: 'coffee', input: PINNED } })
+    check('...and a pin on ANOTHER feed is not this feed\'s warning',
+      pinnedElsewhere.body.result.pinnedHere === false)
 
-    const gone = await del('/post/delete', { body: { input: TARGET } })
-    check('the post is deleted', gone.status === 200 && gone.body.result.removed === 2)
-    check(
-      '...from EVERY feed that held it',
-      gone.body.result.feeds.map((f: any) => f.key).sort().join() === 'coffee,tea',
-      JSON.stringify(gone.body.result.feeds.map((f: any) => f.key)),
-    )
-    check('...naming them the way the page does', gone.body.result.feeds.some((f: any) => f.displayName === 'Tea'))
-    check('...and only those rows are gone', (await remaining()) === 2)
+    // The one that matters. A post stored for two feeds is two rows, and this
+    // takes exactly one of them: the feed the page had open.
+    const gone = await del('/post/delete', { body: { feed: 'coffee', input: TARGET } })
+    check('the post is deleted', gone.status === 200 && gone.body.result.removed === 1)
+    check('...from the SELECTED feed only', (await feedsHolding(TARGET)).join() === 'tea',
+      (await feedsHolding(TARGET)).join())
+    check('...leaving every other row alone', (await remaining()) === 3)
 
     // The trail. Without it this is the only kind of removal on the box that
     // leaves no record, and the Activity tab would under-report.
     const dump = gone.body.result.dump
     check('it wrote a dump beside the database', !!dump && fs.existsSync(dump))
     const dumped = JSON.parse(fs.readFileSync(dump, 'utf8'))
-    check('...with a row per feed', dumped.length === 2)
+    check('...with the one row it removed', dumped.length === 1)
+    check('...filed under that feed', dumped[0]?.feed === 'coffee')
     check(
       '...marked as a removal made by hand',
       dumped.every((d: any) => d.why === 'deleted by hand'),
@@ -362,21 +379,22 @@ const run = async () => {
       dumped.every((d: any) => d.uri && d.feed && d.indexedAt),
     )
 
-    const again = await del('/post/delete', { body: { input: TARGET } })
+    const again = await del('/post/delete', { body: { feed: 'coffee', input: TARGET } })
     check('deleting it twice is not an error', again.status === 200)
     check('...it simply reports nothing was there', again.body.result.removed === 0)
     check('...and writes no dump for a no-op', again.body.result.dump === null)
+    check('...and the copy in the other feed is STILL there',
+      (await feedsHolding(TARGET)).join() === 'tea')
 
-    // A pin is config, not a row: deleting the row leaves the post at the top
-    // of that feed, and a button that looks like it did nothing is worse than
-    // one that refuses.
-    const pinned = await del('/post/delete', { body: { input: PINNED } })
+    // Deleting it from the other feed is a separate, deliberate act — which is
+    // the whole point of the scoping.
+    const second = await del('/post/delete', { body: { feed: 'tea', input: TARGET } })
+    check('switching feed and repeating removes the other copy',
+      second.body.result.removed === 1 && (await feedsHolding(TARGET)).length === 0)
+
+    const pinned = await del('/post/delete', { body: { feed: 'tea', input: PINNED } })
     check('a pinned post still deletes', pinned.body.result.removed === 1)
-    check(
-      '...but says it is still pinned',
-      pinned.body.result.pinnedOn.join() === 'tea',
-      JSON.stringify(pinned.body.result.pinnedOn),
-    )
+    check('...but says it is still pinned', pinned.body.result.pinnedHere === true)
 
     closeDel()
     await db.destroy()

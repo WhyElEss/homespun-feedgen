@@ -247,8 +247,8 @@ const run = async () => {
   const resolved: string[] = []
   const resolvedLists: string[] = []
   const probes: any[] = []
-  const deletes: string[] = []
-  const inspects: string[] = []
+  const deletes: any[] = []
+  const inspects: any[] = []
   const measures: any[] = []
   const published: any[] = []
   let totpBegins = 0
@@ -328,22 +328,24 @@ const run = async () => {
         samples: [{ uri: 'at://1', handle: 'ann', text: 'fresh coffee', matched: 'coffee' }] } }
     }
     else if (url === '/admin/post/inspect' || url === '/admin/post/delete') {
-      const asked = JSON.parse(init.body).input
-      ;(url === '/admin/post/delete' ? deletes : inspects).push(asked)
-      const empty = asked.includes('nothere')
+      const sent = JSON.parse(init.body)
+      ;(url === '/admin/post/delete' ? deletes : inspects).push(sent)
+      const empty = String(sent.input).includes('nothere')
       const target = {
         uri: empty
           ? 'at://did:plc:a/app.bsky.feed.post/9'
           : 'at://did:plc:a/app.bsky.feed.post/2',
         handle: 'ann.example', text: 'a post nobody wanted', exists: true,
-        feeds: empty ? [] : [
-          { key: 'coffee', displayName: 'Coffee', indexedAt: '2026-08-04T10:00:00.000Z' },
-          { key: 'radio', displayName: 'Radio', indexedAt: '2026-08-04T10:00:00.000Z' }],
-        pinnedOn: asked.includes('pinned') ? ['radio'] : [],
+        feed: sent.feed,
+        displayName: sent.feed === 'coffee' ? 'Coffee' : 'Radio',
+        stored: !empty,
+        indexedAt: empty ? null : '2026-08-04T10:00:00.000Z',
+        alsoIn: empty ? [] : ['Radio'],
+        pinnedHere: String(sent.input).includes('pinned'),
       }
       body = url === '/admin/post/inspect'
         ? { ok: true, result: target }
-        : { ok: true, result: { ...target, removed: target.feeds.length,
+        : { ok: true, result: { ...target, removed: target.stored ? 1 : 0,
             dump: '/data/purged-20260904T101500Z.json' } }
     }
     else if (url === '/admin/whynot' && JSON.parse(init.body).input.includes('blocked')) {
@@ -874,6 +876,35 @@ const run = async () => {
   picker.handlers['change']()
   await settle()
 
+  // The same trap, one panel down, and it had been live since whyNot shipped:
+  // switching the feed is supposed to re-answer the open question from the new
+  // feed's side. `var redrawWhy = function () {}` sat BELOW the call that fills
+  // it in, so the initialiser ran afterwards and put the no-op back. Asserted
+  // on the answer, not on the handle: the verdict card must follow the picker.
+  const whyField = find(app, 'input').filter((i) =>
+    (i.attrs.placeholder || '').indexOf('bsky.app/profile') >= 0).slice(-1)[0]
+  const explainBtn = walk(app).find((e) => e.textContent === 'Explain')!
+  whyField.value = 'https://bsky.app/profile/ann.example/post/blocked'
+  explainBtn.handlers['click']()
+  await settle()
+  // Answered from Coffee's side: Coffee is the feed being edited, so it gets
+  // the full verdict card and there is no "other feeds" fold at all.
+  check('whyNot answers for the feed in the picker',
+    textOf(panelOf('lab')).includes('Dropped on') &&
+      !textOf(panelOf('lab')).includes('other feeds'))
+  picker.value = 'radio'
+  picker.handlers['change']()
+  await settle()
+  // From Radio's side the same answer has no verdict for the open feed at all,
+  // and Coffee becomes the footnote. If redrawWhy is a no-op the card simply
+  // sits there still answering for Coffee, which is what it used to do.
+  check('...and switching the feed re-answers it, rather than freezing',
+    textOf(panelOf('lab')).includes('other feeds (1)'),
+    textOf(panelOf('lab')).includes('Dropped on') ? 'still Coffee\'s card' : '')
+  picker.value = 'coffee'
+  picker.handlers['change']()
+  await settle()
+
   console.log('\n── the record card is separate from the filters')
   check('the card is shown', all.includes('Feed record — what readers see'))
   check('...loading the PUBLISHED name, not the internal label',
@@ -1075,21 +1106,25 @@ const run = async () => {
   check('...and marks nothing in the preview',
     walk(app).filter((e) => e.className === 'hitmark').length === 0)
 
-  // Resolve, look, delete. The guarantee is not a dialog — it is that the post
-  // is on screen, with the feeds holding it, before the red button is live.
+  // Resolve, look, delete — and all of it scoped to the feed in the picker,
+  // like every other control on this page.
   console.log('\n── Delete a post')
   const delBtn = walk(panelOf('lab')).find((e) => e.textContent === 'Delete')!
   check('the button is on the Lab tab', !!delBtn)
   check('...wearing the danger paint, not a default button',
     delBtn.className === 'destroy')
-  check('...as an h2 above a card, like every other section there',
+  // The heading is where the scope has to be readable without pressing
+  // anything: "Delete a post" alone reads box-wide, and that is exactly the
+  // reading that was reported as wrong.
+  check('...under a heading that says which feed it means',
     walk(panelOf('lab')).some((e) =>
-      e.tagName === 'H2' && e.textContent === 'Delete a post'))
-  // It WRITES, and this tab puts what writes above what only reads.
+      e.tagName === 'H2' && e.textContent === 'Delete a post from this feed'))
   const labOrder = textOf(panelOf('lab'))
   check('...among the writing controls, ahead of the diagnostics',
     labOrder.indexOf('Delete a post') < labOrder.indexOf('Why is this post (not) in a feed?'))
-  check('...telling you to resolve first, and why',
+  check('...saying outright it acts on the selected feed and no other',
+    labOrder.includes('Acts on the feed selected above and on no other'))
+  check('...and to resolve first, and why',
     labOrder.includes('Resolve first') && labOrder.includes('right link'))
 
   const delRow = delBtn.parent!
@@ -1114,15 +1149,21 @@ const run = async () => {
 
   delResolve.handlers['click']()
   await settle()
-  check('Resolve asks about the pasted link', inspects[beforeInspects] === 'https://bsky.app/profile/ann.example/post/2')
+  check('Resolve asks about the pasted link',
+    inspects[beforeInspects]?.input === 'https://bsky.app/profile/ann.example/post/2')
+  check('...for the feed in the picker, never box-wide',
+    inspects[beforeInspects]?.feed === 'coffee', String(inspects[beforeInspects]?.feed))
   check('...without deleting anything', deletes.length === beforeDeletes)
   const looked = textOf(panelOf('lab'))
-  // The three things a confirmation dialog cannot show, because it is asked
-  // before there is anything to look at.
+  // The things a confirmation dialog cannot show, because it is asked before
+  // there is anything to look at.
   check('...naming the author', looked.includes('@ann.example'))
   check('...quoting the post', looked.includes('a post nobody wanted'))
-  check('...and saying which feeds would lose it',
-    looked.includes('Coffee') && looked.includes('Radio'))
+  check('...and saying which feed is about to lose it', looked.includes('In Coffee'))
+  // The report that caused all of this: a post in several feeds must not look
+  // like one press removes it everywhere.
+  check('...naming the other feeds holding it as UNTOUCHED',
+    looked.includes('also stored in Radio') && looked.includes('does not touch'))
   check('...which is when Delete becomes live', delBtn.disabled === false)
   check('the field now holds the URI that was actually resolved',
     delField.value === 'at://did:plc:a/app.bsky.feed.post/2')
@@ -1140,9 +1181,12 @@ const run = async () => {
   delBtn.handlers['click']()
   await settle()
   check('Delete sends the RESOLVED uri, never the raw field',
-    deletes[beforeDeletes] === 'at://did:plc:a/app.bsky.feed.post/2',
-    deletes[beforeDeletes])
-  check('...and says where it went from', textOf(panelOf('lab')).includes('Gone'))
+    deletes[beforeDeletes]?.input === 'at://did:plc:a/app.bsky.feed.post/2',
+    String(deletes[beforeDeletes]?.input))
+  check('...scoped to the same feed it resolved against',
+    deletes[beforeDeletes]?.feed === 'coffee')
+  check('...and says which feed it went from',
+    textOf(panelOf('lab')).includes('removed from Coffee'))
   check('the field is cleared, so the spent link cannot be sent twice',
     delField.value === '')
   check('...leaving nothing armed', delBtn.disabled === true)
@@ -1152,10 +1196,10 @@ const run = async () => {
   delResolve.handlers['click']()
   await settle()
   const missed = walk(panelOf('lab')).find((e) =>
-    (e.textContent || '').includes('Not in any feed on this box'))!
-  check('a post that is not here says so on resolve', !!missed)
+    (e.textContent || '').includes('Not in Coffee'))!
+  check('a post this feed does not hold says so on resolve', !!missed)
   check('...as a warning, not as a success', missed.className.includes('warn'))
-  check('...and Delete stays dead — there is nothing to delete',
+  check('...and Delete stays dead — there is nothing to delete here',
     delBtn.disabled === true)
 
   delField.value = 'https://bsky.app/profile/ann.example/post/pinned'
@@ -1163,7 +1207,27 @@ const run = async () => {
   delResolve.handlers['click']()
   await settle()
   check('a PINNED post is flagged BEFORE it is deleted, not after',
-    textOf(panelOf('lab')).includes('PINNED on radio'))
+    textOf(panelOf('lab')).includes('PINNED on Coffee'))
+
+  // An armed button surviving a feed switch is the same bug as an armed button
+  // surviving an edit: the answer on screen was about the feed you just left.
+  //
+  // Both this and the whyNot redraw below it are handles the render assigns to
+  // a variable declared elsewhere, and getting that order wrong makes them
+  // silent no-ops — which is what redrawWhy had been since it was written.
+  delField.value = 'https://bsky.app/profile/ann.example/post/2'
+  delField.handlers['input']()
+  delResolve.handlers['click']()
+  await settle()
+  check('armed again for Coffee', delBtn.disabled === false)
+  picker.value = 'radio'
+  picker.handlers['change']()
+  await settle()
+  check('switching feed disarms Delete', delBtn.disabled === true)
+  check('...and empties the field with it', delField.value === '')
+  picker.value = 'coffee'
+  picker.handlers['change']()
+  await settle()
 
   console.log('\n── the new-feed wizard')
   const newBtn = walk(app).find((e) => e.textContent === '+ New feed')!

@@ -88,11 +88,12 @@ export type AdminRouterOptions = {
   // When present, POST /lab/probe is served from it.
   probe?: (feed: string, probe: unknown) => Promise<unknown>
   // When present, POST /post/inspect and POST /post/delete are served from
-  // them. Both gated on `writable`: the inspection exists only to be the step
-  // before the delete, and offering it where the delete is refused would be a
-  // dead end with an encouraging button on it.
-  inspectPost?: (input: string) => Promise<unknown>
-  deletePost?: (input: string) => Promise<unknown>
+  // them. Both take the FEED the page has open — every control there is scoped
+  // to the picker — and both are gated on `writable`: the inspection exists
+  // only to be the step before the delete, and offering it where the delete is
+  // refused would be a dead end with an encouraging button on it.
+  inspectPost?: (feed: string, input: string) => Promise<unknown>
+  deletePost?: (feed: string, input: string) => Promise<unknown>
   // Whose repository the feed records live in, and which service they point at.
   // Without it the record-editing routes are not mounted at all.
   identity?: {
@@ -633,8 +634,11 @@ export const createAdminRouter = (opts: AdminRouterOptions = {}): express.Router
   // operator has looked at the post and decided; asking them to justify it to a
   // config file is what these two routes exist to skip.
   //
+  // Both take the feed the page has open: these act on ONE feed's copy of a
+  // post, like every other control on that page.
+  //
   // TWO ROUTES, and the pair is the point. /post/inspect says what is at the
-  // link and which feeds hold it; /post/delete removes it. The page will not
+  // link and whether that feed holds it; /post/delete removes that one row. The page will not
   // enable its button until the first has answered, so the thing being deleted
   // has been on screen — which is more than a confirmation dialog can offer,
   // since a dialog asks before there is anything to look at.
@@ -644,7 +648,7 @@ export const createAdminRouter = (opts: AdminRouterOptions = {}): express.Router
     // leaving it in the one they are.
     const postRoute = (
       path: string,
-      run: (input: string) => Promise<unknown>,
+      run: (feed: string, input: string) => Promise<unknown>,
     ) =>
       router.post(path, guard, async (req, res) => {
         if (!opts.writable) {
@@ -654,13 +658,21 @@ export const createAdminRouter = (opts: AdminRouterOptions = {}): express.Router
           })
           return
         }
-        const input = String((req.body ?? {}).input ?? '').trim()
+        const body: any = req.body ?? {}
+        // Required, never defaulted. A delete that guessed which feed it was
+        // for would be the one bug in here nobody could undo.
+        const feed = String(body.feed ?? '').trim()
+        if (!feed) {
+          res.status(400).json({ ok: false, error: 'feed is required' })
+          return
+        }
+        const input = String(body.input ?? '').trim()
         if (!input) {
           res.status(400).json({ ok: false, error: 'paste a post link first' })
           return
         }
         try {
-          res.json({ ok: true, result: await run(input) })
+          res.json({ ok: true, result: await run(feed, input) })
         } catch (err: any) {
           res.status(400).json({ ok: false, error: String(err?.message ?? err) })
         }

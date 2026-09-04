@@ -90,8 +90,8 @@ const mountAdminUi = (
       whyNot: (input) => explainPost(ctx.db, input),
       probe: (feed, p: any) =>
         probePattern(ctx.db, feed, { pattern: p.pattern, flags: p.flags, target: p.target }),
-      inspectPost: (input) => inspectPost(ctx.db, input),
-      deletePost: (input) => deletePost(ctx.db, input),
+      inspectPost: (feed, input) => inspectPost(ctx.db, feed, input),
+      deletePost: (feed, input) => deletePost(ctx.db, feed, input),
       identity: {
         publisherDid: ctx.cfg.publisherDid,
         serviceDid: ctx.cfg.serviceDid,

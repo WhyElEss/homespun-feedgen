@@ -1474,6 +1474,21 @@ export const ADMIN_PAGE = `<!doctype html>
     // titled Record over a heading over a card saying the same thing three
     // times was three times too many.
     hosts.record.appendChild(recordHost);
+    // Handles the Lab panels hand back so a feed switch can reach them, and
+    // they MUST be declared above the calls below.
+    //
+    // The renders are function declarations, so they hoist and can be called
+    // from here — but the variables they assign do not. Written as
+    // "var redrawWhy = function () {}" further down the file, next to the
+    // render that fills it in, the initialiser runs AFTER this line and
+    // silently puts the no-op back. That is not hypothetical: redrawWhy was
+    // written that way, so switching feeds never did re-answer the open whyNot
+    // question, with nothing on screen to say so. Found 2026-09-04 by
+    // reproducing it exactly while adding resetDelete.
+    var lastWhy = null;
+    var redrawWhy = function () {};
+    var resetDelete = function () {};
+
     // The two things on this tab that WRITE go first, ahead of the two
     // diagnostics: a control buried under two read-only panels is the "nobody
     // knows it exists" failure the bridgedPosts toggle already cost us.
@@ -2708,9 +2723,9 @@ export const ADMIN_PAGE = `<!doctype html>
     }
 
     // ── whyNot: one post, answered from the point of view of the open feed.
-    var lastWhy = null;
-    var redrawWhy = function () {};
-    // ── whyNot
+    // lastWhy / redrawWhy are declared UP with the other cross-panel state, not
+    // here — see the note there. A "var x = ..." below the call site re-runs
+    // and wipes what the render assigned.
     function renderWhyNot(root) {
       var input = h('input', { type: 'text',
         placeholder: 'https://bsky.app/profile/…/post/… — or an at:// URI' });
@@ -2963,19 +2978,25 @@ export const ADMIN_PAGE = `<!doctype html>
       ]));
     }
 
-    // ── delete one post
+    // ── delete one post, from the feed on screen
     //
     // The only control on this page that acts on a single post rather than on a
-    // rule. Two presses, and the first one is the check: Resolve says what is
-    // actually at that link and which feeds hold it, and Delete does not light
-    // up until it has answered.
+    // rule — and, like everything else here, it acts on the feed in the
+    // "Editing feed" picker and on nothing else. A post stored for four feeds
+    // is four rows; this removes the one belonging to the feed you are looking
+    // at. Switching the picker disarms it, because the answer on screen was
+    // about the feed you just left.
+    //
+    // Two presses, and the first one is the check: Resolve says what is
+    // actually at that link and whether THIS feed holds it, and Delete does not
+    // light up until it has answered.
     //
     // NOT a confirmation dialog, and the difference is the whole design. A
     // dialog asks "are you sure?" before there is anything to be sure ABOUT —
     // it can only quote back the string you typed, which is precisely the thing
     // that might be wrong. The Save that used to have one was answered yes
-    // every time. Here the post is on screen, with its author, its text and the
-    // feeds it is in, BEFORE the red button is pressable at all.
+    // every time. Here the post is on screen, with its author, its text and
+    // which feed is about to lose it, BEFORE the red button is pressable.
     //
     // And what Delete sends is the resolved at:// URI, not the field: editing
     // the field after resolving disables the button, so what leaves is always
@@ -2988,7 +3009,7 @@ export const ADMIN_PAGE = `<!doctype html>
       var out = h('div', { class: 'msg', role: 'status' });
       var body = h('div', {}, []);
       // The resolved target, and the only thing Delete will act on. Dropped the
-      // moment the field changes.
+      // moment the field changes or the feed does.
       var found = null;
 
       function paint() {
@@ -2996,23 +3017,30 @@ export const ADMIN_PAGE = `<!doctype html>
         findBtn.disabled = !has;
         // Visible and disabled rather than hidden, the same call as Remove pin:
         // the shape of the operation — resolve, look, delete — has to be
-        // readable before anything is typed.
-        btn.disabled = !found || !found.feeds.length;
+        // readable before anything is typed. Armed only for a post this feed
+        // actually holds: "nothing to do" must not look like "ready to go".
+        btn.disabled = !found || !found.stored;
+      }
+      function forget() {
+        found = null; body.innerHTML = '';
+        out.className = 'msg'; out.textContent = '';
+        paint();
       }
       // Any edit invalidates the answer on screen. Without this, resolving one
       // link and then pasting another would leave a red button armed against
       // the post you were looking at a moment ago.
-      input.addEventListener('input', function () {
-        if (found) { found = null; body.innerHTML = ''; out.className = 'msg'; out.textContent = ''; }
-        paint();
-      });
+      input.addEventListener('input', function () { if (found) forget(); else paint(); });
+      // Same for the picker: the verdict was about the feed you just left, and
+      // an armed button surviving a feed switch is the same bug wearing a
+      // different hat.
+      resetDelete = function () { input.value = ''; forget(); };
 
       function resolve() {
         var v = input.value.trim();
         if (!v) return;
         findBtn.disabled = true; btn.disabled = true; body.innerHTML = '';
         out.className = 'msg'; out.textContent = 'Looking it up…';
-        call('post/inspect', { body: { input: v } }).then(function (r) {
+        call('post/inspect', { body: { feed: key, input: v } }).then(function (r) {
           return r.json().then(function (b) { return { status: r.status, body: b }; });
         }).then(function (res) {
           if (res.status !== 200) {
@@ -3033,10 +3061,10 @@ export const ADMIN_PAGE = `<!doctype html>
 
       function go() {
         if (!found) return;
-        var target = found.uri;
+        var target = found.uri, feed = found.feed;
         findBtn.disabled = true; btn.disabled = true;
         out.className = 'msg'; out.textContent = 'Deleting…';
-        call('post/delete', { body: { input: target } }).then(function (r) {
+        call('post/delete', { body: { feed: feed, input: target } }).then(function (r) {
           return r.json().then(function (b) { return { status: r.status, body: b }; });
         }).then(function (res) {
           if (res.status !== 200) {
@@ -3044,7 +3072,7 @@ export const ADMIN_PAGE = `<!doctype html>
             out.className = 'msg bad'; out.textContent = res.body.error; return;
           }
           // Cleared on success: the link is spent, and a second press could
-          // only report "not in any feed" and read as a failure.
+          // only report "not in this feed" and read as a failure.
           found = null; input.value = ''; paint();
           showGone(res.body.result);
         }).catch(function (e) {
@@ -3064,9 +3092,11 @@ export const ADMIN_PAGE = `<!doctype html>
         if (/^https?:/i.test(input.value.trim())) resolve();
       });
 
-      // Author, text and — the part a dialog could never show — which feeds
-      // actually hold it. "Am I about to remove more than I meant?" is answered
-      // here, before the button is live.
+      function feedName(r) { return r.displayName || r.feed; }
+
+      // Author, text and — the part a dialog could never show — whether this
+      // feed actually holds it. "Am I about to remove the right thing?" is
+      // answered here, before the button is live.
       function card(r) {
         var kids = [h('dl', {}, [
           kv('Author', r.handle ? '@' + r.handle : '(not retrievable)'),
@@ -3076,35 +3106,38 @@ export const ADMIN_PAGE = `<!doctype html>
         if (!r.exists) {
           kids.push(h('p', { class: 'small muted', text:
             'Bluesky no longer has this post — it was deleted upstream, or its ' +
-            'author blocks the viewer. The row in this database is still here ' +
-            'and can still be removed.' }));
+            'author blocks the viewer. The row in this feed is still here and ' +
+            'can still be removed.' }));
         }
-        if (r.pinnedOn && r.pinnedOn.length) {
+        // Named, and named as UNTOUCHED. Without this the post quietly survives
+        // somewhere else and the button looks like it half worked; with it, the
+        // scope is unmistakable.
+        if (r.alsoIn && r.alsoIn.length) {
+          kids.push(h('p', { class: 'small muted', text:
+            'The same post is also stored in ' + r.alsoIn.join(', ') + '. This ' +
+            'button does not touch ' + (r.alsoIn.length === 1 ? 'it' : 'them') +
+            ' — switch the feed at the top and repeat this if you want it gone ' +
+            'from there too.' }));
+        }
+        if (r.pinnedHere) {
           kids.push(h('p', { class: 'small warn-text', text:
-            'This post is PINNED on ' + r.pinnedOn.join(', ') + '. A pin is ' +
-            'config, not a stored row, so deleting it here will NOT take it off ' +
-            'the top of that feed — un-pin it above as well.' }));
+            'This post is PINNED on ' + feedName(r) + '. A pin is config, not a ' +
+            'stored row, so deleting it here will NOT take it off the top of ' +
+            'this feed — un-pin it above as well.' }));
         }
         return h('div', { class: 'card pad' }, kids);
-      }
-      function feedNames(r) {
-        return r.feeds.map(function (f) { return f.displayName || f.key; });
       }
 
       function showFound(r) {
         body.innerHTML = '';
-        if (r.feeds.length) {
+        if (r.stored) {
           out.className = 'msg';
-          out.textContent = 'In ' + r.feeds.length +
-            (r.feeds.length === 1 ? ' feed: ' : ' feeds: ') + feedNames(r).join(', ') +
-            '. Delete removes it from ' + (r.feeds.length === 1 ? 'it.' : 'all of them.');
+          out.textContent = 'In ' + feedName(r) + '. Delete removes it from ' +
+            'this feed.';
         } else {
-          // Not an error: the post simply is not here. Said plainly, because
-          // "nothing to do" and "ready to go" must not look the same — and the
-          // button stays dead.
           out.className = 'msg warn';
-          out.textContent = 'Not in any feed on this box — nothing to delete. ' +
-            'It may have been pruned already, or never matched.';
+          out.textContent = 'Not in ' + feedName(r) + ' — nothing to delete ' +
+            'here. It may have been pruned already, or never matched.';
         }
         body.appendChild(card(r));
       }
@@ -3112,19 +3145,18 @@ export const ADMIN_PAGE = `<!doctype html>
       function showGone(r) {
         body.innerHTML = '';
         out.className = 'msg ok';
-        out.textContent = 'Gone — removed from ' + feedNames(r).join(', ') + '.';
-        var kids = [card(r)];
-        kids.push(h('p', { class: 'small muted', text:
-          'Out of the feed as soon as the next request is served. Nothing ' +
+        out.textContent = 'Gone — removed from ' + feedName(r) + '.';
+        body.appendChild(h('div', {}, [card(r), h('p', { class: 'small muted', text:
+          'Out of this feed as soon as the next request is served. Nothing ' +
           're-reads old posts, so it stays out; only a cursor rewind, which ' +
-          'replays the firehose, could bring it back.' }));
-        body.appendChild(h('div', {}, kids));
+          'replays the firehose, could bring it back.' })]));
 
         // The panel below may be showing this very post, with "in the database"
-        // next to it. Correct it in place rather than leaving an answer on
-        // screen that this button just made false.
+        // next to it. Correct THIS feed's line in place rather than leaving an
+        // answer on screen that this button just made false.
         if (lastWhy && lastWhy.uri === r.uri && r.removed) {
           lastWhy.feeds.forEach(function (f) {
+            if (f.key !== r.feed) return;
             f.stored = false; f.disagrees = f.wouldIndex;
           });
           redrawWhy();
@@ -3132,17 +3164,18 @@ export const ADMIN_PAGE = `<!doctype html>
       }
 
       paint();
-      root.appendChild(h('h2', { text: 'Delete a post' }));
+      root.appendChild(h('h2', { text: 'Delete a post from this feed' }));
       root.appendChild(h('div', { class: 'card pad' }, [
         h('div', { class: 'row wrapx' }, [input, findBtn, btn]),
         h('p', { class: 'small muted', text:
-          'Resolve first: it shows whose post it is, what it says and which ' +
-          'feeds hold it, so you can see you pasted the right link before ' +
-          'anything happens. Delete then removes it from every one of those ' +
-          'feeds immediately — no filter is touched and nothing needs saving. ' +
-          'It is not undoable, and it does not stop a similar post arriving ' +
-          'tomorrow: that is what a filter or the moderation list is for. The ' +
-          'removal is recorded on the Activity tab.' }),
+          'Acts on the feed selected above and on no other, like everything ' +
+          'else on this page. Resolve first: it shows whose post it is, what ' +
+          'it says and whether this feed holds it, so you can see you pasted ' +
+          'the right link before anything happens. Delete then removes it from ' +
+          'this feed immediately — no filter is touched and nothing needs ' +
+          'saving. It is not undoable, and it does not stop a similar post ' +
+          'arriving tomorrow: that is what a filter or the moderation list is ' +
+          'for. The removal is recorded on the Activity tab.' }),
         out, body
       ]));
     }
@@ -3296,6 +3329,10 @@ export const ADMIN_PAGE = `<!doctype html>
       recordHost.appendChild(recordCard());
       showDirty();
       redrawWhy();
+      // whyNot re-answers for the new feed; this one cannot, because its answer
+      // was about whether the PREVIOUS feed held the post. Cleared instead, so
+      // no red button survives a feed switch.
+      resetDelete();
       // The activity card follows the picker like the other three feed-scoped
       // tabs. Repainted in place — the status pane it sits in is not rebuilt.
       activityFeed = k;
