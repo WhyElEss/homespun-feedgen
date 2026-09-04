@@ -659,11 +659,18 @@ export const createAdminRouter = (opts: AdminRouterOptions = {}): express.Router
           return
         }
         const body: any = req.body ?? {}
-        // Required, never defaulted. A delete that guessed which feed it was
-        // for would be the one bug in here nobody could undo.
+        // Required, never defaulted: a delete that guessed which feed it was
+        // for would be the one bug in here nobody could undo. The page always
+        // sends the feed it has open, so the only way to arrive without one is
+        // a browser tab left open across the deploy that added it — which is
+        // what the message says, because "feed is required" told the operator
+        // to go and find a field that does not exist.
         const feed = String(body.feed ?? '').trim()
         if (!feed) {
-          res.status(400).json({ ok: false, error: 'feed is required' })
+          res.status(400).json({
+            ok: false,
+            error: 'this page is out of date — reload it and try again.',
+          })
           return
         }
         const input = String(body.input ?? '').trim()

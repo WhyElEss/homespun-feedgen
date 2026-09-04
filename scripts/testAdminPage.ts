@@ -337,10 +337,8 @@ const run = async () => {
           : 'at://did:plc:a/app.bsky.feed.post/2',
         handle: 'ann.example', text: 'a post nobody wanted', exists: true,
         feed: sent.feed,
-        displayName: sent.feed === 'coffee' ? 'Coffee' : 'Radio',
         stored: !empty,
         indexedAt: empty ? null : '2026-08-04T10:00:00.000Z',
-        alsoIn: empty ? [] : ['Radio'],
         pinnedHere: String(sent.input).includes('pinned'),
       }
       body = url === '/admin/post/inspect'
@@ -876,34 +874,6 @@ const run = async () => {
   picker.handlers['change']()
   await settle()
 
-  // The same trap, one panel down, and it had been live since whyNot shipped:
-  // switching the feed is supposed to re-answer the open question from the new
-  // feed's side. `var redrawWhy = function () {}` sat BELOW the call that fills
-  // it in, so the initialiser ran afterwards and put the no-op back. Asserted
-  // on the answer, not on the handle: the verdict card must follow the picker.
-  const whyField = find(app, 'input').filter((i) =>
-    (i.attrs.placeholder || '').indexOf('bsky.app/profile') >= 0).slice(-1)[0]
-  const explainBtn = walk(app).find((e) => e.textContent === 'Explain')!
-  whyField.value = 'https://bsky.app/profile/ann.example/post/blocked'
-  explainBtn.handlers['click']()
-  await settle()
-  // Answered from Coffee's side: Coffee is the feed being edited, so it gets
-  // the full verdict card and there is no "other feeds" fold at all.
-  check('whyNot answers for the feed in the picker',
-    textOf(panelOf('lab')).includes('Dropped on') &&
-      !textOf(panelOf('lab')).includes('other feeds'))
-  picker.value = 'radio'
-  picker.handlers['change']()
-  await settle()
-  // From Radio's side the same answer has no verdict for the open feed at all,
-  // and Coffee becomes the footnote. If redrawWhy is a no-op the card simply
-  // sits there still answering for Coffee, which is what it used to do.
-  check('...and switching the feed re-answers it, rather than freezing',
-    textOf(panelOf('lab')).includes('other feeds (1)'),
-    textOf(panelOf('lab')).includes('Dropped on') ? 'still Coffee\'s card' : '')
-  picker.value = 'coffee'
-  picker.handlers['change']()
-  await settle()
 
   console.log('\n── the record card is separate from the filters')
   check('the card is shown', all.includes('Feed record — what readers see'))
@@ -1106,33 +1076,34 @@ const run = async () => {
   check('...and marks nothing in the preview',
     walk(app).filter((e) => e.className === 'hitmark').length === 0)
 
-  // Resolve, look, delete — and all of it scoped to the feed in the picker,
-  // like every other control on this page.
+  // Resolve, then Delete. One field, two buttons, one line of answer — the
+  // scope is the picker at the top of the page and goes unsaid, like it does on
+  // every other tab.
   console.log('\n── Delete a post')
   const delBtn = walk(panelOf('lab')).find((e) => e.textContent === 'Delete')!
   check('the button is on the Lab tab', !!delBtn)
   check('...wearing the danger paint, not a default button',
     delBtn.className === 'destroy')
-  // The heading is where the scope has to be readable without pressing
-  // anything: "Delete a post" alone reads box-wide, and that is exactly the
-  // reading that was reported as wrong.
-  check('...under a heading that says which feed it means',
+  check('...as an h2 above a card, like every other section there',
     walk(panelOf('lab')).some((e) =>
-      e.tagName === 'H2' && e.textContent === 'Delete a post from this feed'))
+      e.tagName === 'H2' && e.textContent === 'Delete a post'))
   const labOrder = textOf(panelOf('lab'))
   check('...among the writing controls, ahead of the diagnostics',
     labOrder.indexOf('Delete a post') < labOrder.indexOf('Why is this post (not) in a feed?'))
-  check('...saying outright it acts on the selected feed and no other',
-    labOrder.includes('Acts on the feed selected above and on no other'))
-  check('...and to resolve first, and why',
-    labOrder.includes('Resolve first') && labOrder.includes('right link'))
+  // The help text is one sentence per button and nothing else. It had grown to
+  // six clauses, including which OTHER feeds held the post — noise on a page
+  // where the feed is already chosen at the top and every control follows it.
+  const delHelp = walk(panelOf('lab')).find((e) =>
+    (e.textContent || '').indexOf('Resolve shows whose post it is') === 0)!
+  check('...over help that is one line, not a paragraph',
+    !!delHelp && delHelp.textContent.length < 200, String(delHelp.textContent.length))
+  check('...saying nothing about other feeds',
+    !delHelp.textContent.includes('feeds') && !labOrder.includes('also stored in'))
 
   const delRow = delBtn.parent!
   const delField = delRow.children[0]
   const delResolve = delRow.children[1]
   check('Resolve sits between the field and Delete', delResolve.textContent === 'Resolve')
-  // Visible and disabled, not hidden: the shape of the operation has to be
-  // readable before anything is typed. Same call as Remove pin.
   check('nothing is armed on an empty field',
     delBtn.disabled === true && delResolve.disabled === true)
 
@@ -1151,25 +1122,18 @@ const run = async () => {
   await settle()
   check('Resolve asks about the pasted link',
     inspects[beforeInspects]?.input === 'https://bsky.app/profile/ann.example/post/2')
-  check('...for the feed in the picker, never box-wide',
+  // The page carries the picker's feed on every call, so the operator never
+  // sees a field or an error about one.
+  check('...carrying the picker\'s feed, which the operator never types',
     inspects[beforeInspects]?.feed === 'coffee', String(inspects[beforeInspects]?.feed))
   check('...without deleting anything', deletes.length === beforeDeletes)
-  const looked = textOf(panelOf('lab'))
-  // The things a confirmation dialog cannot show, because it is asked before
-  // there is anything to look at.
-  check('...naming the author', looked.includes('@ann.example'))
-  check('...quoting the post', looked.includes('a post nobody wanted'))
-  check('...and saying which feed is about to lose it', looked.includes('In Coffee'))
-  // The report that caused all of this: a post in several feeds must not look
-  // like one press removes it everywhere.
-  check('...naming the other feeds holding it as UNTOUCHED',
-    looked.includes('also stored in Radio') && looked.includes('does not touch'))
+  check('...answering in one line: who, and what it says',
+    textOf(panelOf('lab')).includes('@ann.example \u2014 a post nobody wanted'))
   check('...which is when Delete becomes live', delBtn.disabled === false)
   check('the field now holds the URI that was actually resolved',
     delField.value === 'at://did:plc:a/app.bsky.feed.post/2')
 
-  // The failure this pair exists to prevent: resolve one post, paste another,
-  // press the red button. Editing the field must disarm it.
+  // Resolve one post, paste another, press the red button. Editing must disarm.
   delField.value = 'https://bsky.app/profile/ann.example/post/somethingelse'
   delField.handlers['input']()
   check('editing the field after resolving disarms Delete', delBtn.disabled === true)
@@ -1185,8 +1149,7 @@ const run = async () => {
     String(deletes[beforeDeletes]?.input))
   check('...scoped to the same feed it resolved against',
     deletes[beforeDeletes]?.feed === 'coffee')
-  check('...and says which feed it went from',
-    textOf(panelOf('lab')).includes('removed from Coffee'))
+  check('...and says so in one word', textOf(panelOf('lab')).includes('Deleted.'))
   check('the field is cleared, so the spent link cannot be sent twice',
     delField.value === '')
   check('...leaving nothing armed', delBtn.disabled === true)
@@ -1196,35 +1159,60 @@ const run = async () => {
   delResolve.handlers['click']()
   await settle()
   const missed = walk(panelOf('lab')).find((e) =>
-    (e.textContent || '').includes('Not in Coffee'))!
+    (e.textContent || '').includes('not in this feed'))!
   check('a post this feed does not hold says so on resolve', !!missed)
   check('...as a warning, not as a success', missed.className.includes('warn'))
-  check('...and Delete stays dead — there is nothing to delete here',
-    delBtn.disabled === true)
+  check('...and Delete stays dead', delBtn.disabled === true)
 
   delField.value = 'https://bsky.app/profile/ann.example/post/pinned'
   delField.handlers['input']()
   delResolve.handlers['click']()
   await settle()
   check('a PINNED post is flagged BEFORE it is deleted, not after',
-    textOf(panelOf('lab')).includes('PINNED on Coffee'))
+    textOf(panelOf('lab')).includes('PINNED here'))
 
-  // An armed button surviving a feed switch is the same bug as an armed button
-  // surviving an edit: the answer on screen was about the feed you just left.
-  //
-  // Both this and the whyNot redraw below it are handles the render assigns to
-  // a variable declared elsewhere, and getting that order wrong makes them
-  // silent no-ops — which is what redrawWhy had been since it was written.
+  // An armed button surviving a feed switch is the same bug as one surviving an
+  // edit: the answer on screen was about the feed you just left.
   delField.value = 'https://bsky.app/profile/ann.example/post/2'
   delField.handlers['input']()
   delResolve.handlers['click']()
   await settle()
-  check('armed again for Coffee', delBtn.disabled === false)
+  check('armed again', delBtn.disabled === false)
   picker.value = 'radio'
   picker.handlers['change']()
   await settle()
   check('switching feed disarms Delete', delBtn.disabled === true)
   check('...and empties the field with it', delField.value === '')
+  picker.value = 'coffee'
+  picker.handlers['change']()
+  await settle()
+
+  console.log('\n── whyNot follows the picker too')
+  // The same trap, one panel down, and it had been live since whyNot shipped:
+  // switching the feed is supposed to re-answer the open question from the new
+  // feed's side. `var redrawWhy = function () {}` sat BELOW the call that fills
+  // it in, so the initialiser ran afterwards and put the no-op back. Asserted
+  // on the answer, not on the handle: the verdict card must follow the picker.
+  const whyField = find(app, 'input').filter((i) =>
+    (i.attrs.placeholder || '').indexOf('bsky.app/profile') >= 0).slice(-1)[0]
+  const explainBtn = walk(app).find((e) => e.textContent === 'Explain')!
+  whyField.value = 'https://bsky.app/profile/ann.example/post/blocked'
+  explainBtn.handlers['click']()
+  await settle()
+  // Answered from Coffee's side: Coffee is the feed being edited, so it gets
+  // the full verdict card and there is no "other feeds" fold at all.
+  check('whyNot answers for the feed in the picker',
+    textOf(panelOf('lab')).includes('Dropped on') &&
+      !textOf(panelOf('lab')).includes('other feeds'))
+  picker.value = 'radio'
+  picker.handlers['change']()
+  await settle()
+  // From Radio's side the same answer has no verdict for the open feed at all,
+  // and Coffee becomes the footnote. If redrawWhy is a no-op the card simply
+  // sits there still answering for Coffee, which is what it used to do.
+  check('...and switching the feed re-answers it, rather than freezing',
+    textOf(panelOf('lab')).includes('other feeds (1)'),
+    textOf(panelOf('lab')).includes('Dropped on') ? 'still Coffee\'s card' : '')
   picker.value = 'coffee'
   picker.handlers['change']()
   await settle()

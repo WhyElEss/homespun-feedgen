@@ -5,39 +5,22 @@ import { toAtUri } from './adminResolve'
 import { clearLabCache } from './adminLab'
 import { getFeedKeys, getFeedConfig, loadFiltersOnce } from './filter'
 
-// "I don't want to see this post in this feed" — resolve the link, look at what
-// came back, then delete it.
+// "I don't want this post in this feed" — resolve the link, check it is the
+// right one, delete it.
 //
-// Everything else on this box decides what a feed holds by RULE: a pattern, a
-// moderation list, a retention window. This is the one place that acts on a
-// single post because someone looked at it and did not want it there, and it
-// asks nothing about WHY — no filter to edit, no measurement to read, no
-// reason to type.
+// Scoped to the feed the page has open, like every control on that page. The
+// feed is passed in; the row it removes is that feed's copy and nothing else.
+// Whether other feeds hold the same post is not this button's business and is
+// deliberately not reported — the whyNot panel answers that question, per feed,
+// for anyone who wants it.
 //
-// SCOPED TO ONE FEED, like every other control on that page. The feed comes
-// from the "Editing feed" picker and is passed in; a post stored for four feeds
-// is four rows, and this removes exactly one of them. Nothing here may reach
-// past the feed on screen — the page has one selected feed and every button on
-// it answers for that feed alone. The first version deleted from all of them at
-// once, which is not a smaller version of this: it is a different, unasked-for
-// operation wearing the same button.
+// Two steps: inspectPost() says what is at the link without touching anything,
+// deletePost() removes the row. The page resolves first and sends back the
+// at:// URI it was shown, so what gets deleted is what was on screen.
 //
-// TWO STEPS, and the first one is the check. inspectPost() answers "what is at
-// this link, and is it in THIS feed" without touching anything; deletePost()
-// then removes exactly that row. The page resolves first and sends back the
-// at:// URI it was shown, so what gets deleted is what was on screen — not
-// whatever the field happens to contain a moment later. A confirmation dialog
-// could not have offered that: it asks before there is anything to look at.
-//
-// Two more decisions worth knowing about:
-//
-//   * it leaves a dump next to the database, exactly like purgePosts --uri, so
-//     the removal shows up on the Activity tab instead of being the one kind of
-//     removal with no trail;
-//   * it does NOT stop the post coming back. Nothing re-reads old posts, so in
-//     practice it stays gone — but a cursor rewind replays the firehose, and a
-//     replayed post is matched again from scratch. A post that must never come
-//     back is a filter or a moderation-list job.
+// It leaves a dump next to the database, exactly like purgePosts --uri, so the
+// removal shows up on the Activity tab rather than being the one kind of
+// removal with no trail.
 
 const API = 'https://public.api.bsky.app'
 
@@ -51,28 +34,19 @@ export type PostTarget = {
   text: string
   // Whether the AppView still has it. False is not a refusal: the usual state
   // of a post worth deleting, an hour later, is deleted upstream, and the row
-  // in this database still has to be removable.
+  // in this feed still has to be removable.
   exists: boolean
-  // The feed this answer is about — the one selected in the picker.
   feed: string
-  displayName: string | null
-  // Is it in THAT feed right now. The only thing the button acts on.
+  // Is it in that feed right now. The only thing the button acts on.
   stored: boolean
   indexedAt: string | null
-  // Other feeds on this box holding the same post, named so the answer cannot
-  // be mistaken for a box-wide one — and explicitly NOT touched. Switch the
-  // picker and delete it there too if that is what you want.
-  alsoIn: string[]
-  // Does THIS feed pin it. Deleting the row does not un-pin it: the pin is
-  // config, hydrated on every request, so the post would keep appearing at the
-  // top of the feed and the button would look broken.
+  // Does this feed pin it. Deleting the row does not un-pin it — the pin is
+  // config, hydrated on every request — so the post would stay at the top of
+  // the feed and the button would look broken.
   pinnedHere: boolean
 }
 
-export type DeleteResult = PostTarget & {
-  removed: number
-  dump: string | null
-}
+export type DeleteResult = PostTarget & { removed: number; dump: string | null }
 
 // The dumps auto-purge and purgePosts write, so the Activity tab can read this
 // one the same way. Second precision, and a same-second collision with a sweep
@@ -91,9 +65,9 @@ const writeDump = (rows: unknown[]): string | null => {
     fs.writeFileSync(file, JSON.stringify(all, null, 2))
     return file
   } catch (err: any) {
-    // A dump that cannot be written must not cancel the deletion. The operator
-    // asked for the post to go; losing the audit line is the smaller failure,
-    // and it is in the log.
+    // A dump that cannot be written must not cancel the deletion: the operator
+    // asked for the post to go, and losing the audit line is the smaller
+    // failure. It is in the log.
     console.warn(`admin: could not write ${file}: ${String(err?.message ?? err)}`)
     return null
   }
@@ -120,8 +94,7 @@ const describe = async (
   }
 }
 
-// Step one: what is at this link, and is it in the selected feed. Reads only —
-// nothing here changes anything, which is what makes it safe to run on a blur.
+// Step one. Reads only, which is what makes it safe to run on a blur.
 export const inspectPost = async (
   db: Database,
   feed: string,
@@ -132,13 +105,12 @@ export const inspectPost = async (
   if (!cfg) throw new Error(`feed "${feed}" is not in the live config`)
 
   const uri = await toAtUri(input)
-
-  const rows = await db
+  const row = await db
     .selectFrom('post')
-    .select(['feed', 'indexedAt'])
+    .select(['indexedAt'])
     .where('uri', '=', uri)
-    .execute()
-  const here = rows.find((r) => r.feed === feed)
+    .where('feed', '=', feed)
+    .executeTakeFirst()
 
   const { handle, text, exists } = await describe(uri)
   return {
@@ -147,35 +119,26 @@ export const inspectPost = async (
     text,
     exists,
     feed,
-    displayName: cfg.displayName ?? null,
-    stored: !!here,
-    indexedAt: here?.indexedAt ?? null,
-    alsoIn: rows
-      .filter((r) => r.feed !== feed)
-      .map((r) => getFeedConfig(r.feed)?.displayName ?? r.feed),
+    stored: !!row,
+    indexedAt: row?.indexedAt ?? null,
     pinnedHere: cfg.pinnedPost === uri,
   }
 }
 
-// Step two. Takes the same input as step one and inspects again rather than
-// trusting anything the caller carried over: the row may have gone (retention
-// prunes, auto-purge sweeps) between the two presses, and the answer has to
-// describe what actually happened, not what was predicted.
+// Step two. Inspects again rather than trusting anything carried over: the row
+// may have gone (retention prunes, auto-purge sweeps) between the two presses,
+// and the answer has to describe what happened, not what was predicted.
 export const deletePost = async (
   db: Database,
   feed: string,
   input: string,
 ): Promise<DeleteResult> => {
   const target = await inspectPost(db, feed, input)
+  if (!target.stored) return { ...target, removed: 0, dump: null }
 
-  if (!target.stored) {
-    return { ...target, removed: 0, dump: null }
-  }
-
-  // The dump is written BEFORE the delete, so a crash between the two leaves a
-  // record of something that is still there rather than no record of something
-  // that is gone. `why` is one of the strings adminActivity reads as a manual
-  // removal — keep the two in step.
+  // Written BEFORE the delete, so a crash between the two leaves a record of
+  // something still there rather than no record of something gone. `why` is one
+  // of the strings adminActivity reads as a manual removal — keep them in step.
   const dump = writeDump([
     {
       uri: target.uri,
@@ -187,15 +150,15 @@ export const deletePost = async (
     },
   ])
 
-  // `and feed = ?` is the whole scoping rule in one line. Without it this
-  // deletes the post from every feed on the box.
+  // `and feed = ?` is the scoping rule. Without it this deletes the post from
+  // every feed on the box.
   await db
     .deleteFrom('post')
     .where('uri', '=', target.uri)
     .where('feed', '=', feed)
     .execute()
 
-  // The lab keeps a hydrated corpus per feed for ten minutes. Left alone, the
+  // The lab keeps a hydrated corpus per feed for ten minutes; left alone, the
   // next "Count matches" would count a post that no longer exists.
   clearLabCache()
 

@@ -320,9 +320,14 @@ const run = async () => {
 
     const { call: del, close: closeDel } = await mount(true, undefined, db)
 
+    // The page always sends the feed it has open, so the only caller without
+    // one is a browser tab left open across the deploy that added it. Refused
+    // rather than guessed at — and the message says that, because "feed is
+    // required" sent someone hunting for a field that does not exist.
     const noFeed = await del('/post/delete', { body: { input: TARGET } })
     check('a delete with no feed is refused, never guessed at', noFeed.status === 400)
-    check('...saying what is missing', String(noFeed.body.error).includes('feed'))
+    check('...telling the operator to reload, not to find a field',
+      /reload/i.test(String(noFeed.body.error)), String(noFeed.body.error))
 
     const wrongFeed = await del('/post/inspect', { body: { feed: 'nope', input: TARGET } })
     check('a feed that is not in the config is an error', wrongFeed.status === 400)
@@ -340,11 +345,12 @@ const run = async () => {
     check('inspect answers before anything is deleted', seen.status === 200)
     check('...for the feed it was asked about', seen.body.result.feed === 'coffee')
     check('...saying that feed holds it', seen.body.result.stored === true)
-    // The scoping rule made visible: the post is in tea as well, and the answer
-    // has to say so without implying the button reaches there.
-    check('...and naming the OTHER feeds as untouched',
-      seen.body.result.alsoIn.join() === 'Tea',
-      JSON.stringify(seen.body.result.alsoIn))
+    // Deliberately silent about the other feeds holding the same post: the
+    // whyNot panel answers that, per feed, and this button does not.
+    check('...and says nothing about any other feed',
+      !JSON.stringify(seen.body.result).includes('tea') &&
+        !JSON.stringify(seen.body.result).includes('Tea'),
+      JSON.stringify(seen.body.result))
     check('...having removed nothing', (await remaining()) === 4)
 
     const pinnedFirst = await del('/post/inspect', { body: { feed: 'tea', input: PINNED } })
