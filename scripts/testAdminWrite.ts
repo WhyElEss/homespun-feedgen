@@ -1,4 +1,5 @@
-// Covers saving the config over HTTP and the lab that measures an edit first.
+// Covers saving the config over HTTP, the lab that measures an edit first, and
+// the delete button that removes one post without consulting either.
 // Usage: yarn testAdminWrite  (needs FEEDGEN_FILTERS_PATH — see below)
 //
 // The interesting cases here are all refusals: a save is the one thing in this
@@ -10,6 +11,7 @@ import express from 'express'
 import { createAdminRouter } from '../src/admin'
 import { createAdminAuth, hashPassword } from '../src/adminAuth'
 import { measureCandidate, seedCorpus, StoredPost } from '../src/adminLab'
+import { deletePost } from '../src/adminDelete'
 import { loadFiltersOnce, buildHaystacks, MatchablePost } from '../src/filter'
 import { createDb, migrateToLatest } from '../src/db'
 
@@ -56,7 +58,7 @@ const post = (uri: string, handle: string, text: string): StoredPost => {
   }
 }
 
-const mount = async (writable: boolean, db?: any) => {
+const mount = async (writable: boolean, db?: any, delDb?: any) => {
   const auth = createAdminAuth({ passwordHash: await hashPassword(PASSWORD) })
   const app = express()
   app.use(
@@ -67,6 +69,7 @@ const mount = async (writable: boolean, db?: any) => {
       lab: db
         ? (feed, filters, refresh) => measureCandidate(db, feed, filters, { refresh })
         : undefined,
+      deletePost: delDb ? (input) => deletePost(delDb, input) : undefined,
     }),
   )
   const server = app.listen(0, '127.0.0.1')
@@ -264,6 +267,103 @@ const run = async () => {
     closeLab()
     await db.destroy()
     fs.rmSync(dbPath, { force: true })
+  }
+
+  console.log('\n\u2500\u2500 deleting one post')
+  {
+    // Two feeds, and the post lives in both: "gone from one of them" is the
+    // failure this whole section exists to rule out.
+    const PINNED = 'at://did:plc:pinned/app.bsky.feed.post/aaa'
+    const TARGET = 'at://did:plc:author/app.bsky.feed.post/bbb'
+    const KEEP = 'at://did:plc:author/app.bsky.feed.post/ccc'
+    const twoFeeds: any = JSON.parse(JSON.stringify(baseConfig()))
+    twoFeeds.feeds.tea = {
+      displayName: 'Tea',
+      includePatterns: [{ pattern: '\\btea\\b' }],
+      pinnedPost: PINNED,
+      retention: { type: 'hours', value: 72 },
+    }
+    fs.writeFileSync(FILTERS, JSON.stringify(twoFeeds, null, 2) + '\n')
+    loadFiltersOnce()
+
+    const dbPath = path.join(path.dirname(FILTERS), 'delete-test.sqlite')
+    fs.rmSync(dbPath, { force: true })
+    process.env.FEEDGEN_SQLITE_LOCATION = dbPath
+    const db = createDb(dbPath)
+    await migrateToLatest(db)
+    const rows = [
+      { uri: TARGET, cid: 'cid1', indexedAt: '2026-09-01T10:00:00.000Z', feed: 'coffee' },
+      { uri: TARGET, cid: 'cid1', indexedAt: '2026-09-01T10:00:00.000Z', feed: 'tea' },
+      { uri: KEEP, cid: 'cid2', indexedAt: '2026-09-01T10:05:00.000Z', feed: 'coffee' },
+      { uri: PINNED, cid: 'cid3', indexedAt: '2026-09-01T10:06:00.000Z', feed: 'tea' },
+    ]
+    await db.insertInto('post').values(rows).execute()
+    const remaining = async () =>
+      (await db.selectFrom('post').select(['uri', 'feed']).execute()).length
+
+    {
+      const { call: ro, close: closeRo } = await mount(false, undefined, db)
+      const res = await ro('/post/delete', { body: { input: TARGET } })
+      check('a read-only box refuses to delete', res.status === 403)
+      check('...and nothing was removed', (await remaining()) === 4)
+      closeRo()
+    }
+
+    const { call: del, close: closeDel } = await mount(true, undefined, db)
+
+    const empty = await del('/post/delete', { body: { input: '   ' } })
+    check('an empty field is refused', empty.status === 400)
+
+    const junk = await del('/post/delete', { body: { input: 'not a link' } })
+    check('junk is refused with an instruction', junk.status === 400)
+    check('...naming the shape it wants', String(junk.body.error).includes('bsky.app'))
+
+    const gone = await del('/post/delete', { body: { input: TARGET } })
+    check('the post is deleted', gone.status === 200 && gone.body.result.removed === 2)
+    check(
+      '...from EVERY feed that held it',
+      gone.body.result.feeds.map((f: any) => f.key).sort().join() === 'coffee,tea',
+      JSON.stringify(gone.body.result.feeds.map((f: any) => f.key)),
+    )
+    check('...naming them the way the page does', gone.body.result.feeds.some((f: any) => f.displayName === 'Tea'))
+    check('...and only those rows are gone', (await remaining()) === 2)
+
+    // The trail. Without it this is the only kind of removal on the box that
+    // leaves no record, and the Activity tab would under-report.
+    const dump = gone.body.result.dump
+    check('it wrote a dump beside the database', !!dump && fs.existsSync(dump))
+    const dumped = JSON.parse(fs.readFileSync(dump, 'utf8'))
+    check('...with a row per feed', dumped.length === 2)
+    check(
+      '...marked as a removal made by hand',
+      dumped.every((d: any) => d.why === 'deleted by hand'),
+      String(dumped[0]?.why),
+    )
+    check(
+      '...carrying the fields the activity view reads',
+      dumped.every((d: any) => d.uri && d.feed && d.indexedAt),
+    )
+
+    const again = await del('/post/delete', { body: { input: TARGET } })
+    check('deleting it twice is not an error', again.status === 200)
+    check('...it simply reports nothing was there', again.body.result.removed === 0)
+    check('...and writes no dump for a no-op', again.body.result.dump === null)
+
+    // A pin is config, not a row: deleting the row leaves the post at the top
+    // of that feed, and a button that looks like it did nothing is worse than
+    // one that refuses.
+    const pinned = await del('/post/delete', { body: { input: PINNED } })
+    check('a pinned post still deletes', pinned.body.result.removed === 1)
+    check(
+      '...but says it is still pinned',
+      pinned.body.result.pinnedOn.join() === 'tea',
+      JSON.stringify(pinned.body.result.pinnedOn),
+    )
+
+    closeDel()
+    await db.destroy()
+    fs.rmSync(dbPath, { force: true })
+    delete process.env.FEEDGEN_SQLITE_LOCATION
   }
 
   fs.rmSync(FILTERS, { force: true })

@@ -247,6 +247,7 @@ const run = async () => {
   const resolved: string[] = []
   const resolvedLists: string[] = []
   const probes: any[] = []
+  const deletes: string[] = []
   const measures: any[] = []
   const published: any[] = []
   let totpBegins = 0
@@ -324,6 +325,19 @@ const run = async () => {
         wouldExceedAutoPurgeCap: false, cachedAt: '2026-08-04T20:00:00.000Z',
         note: 'Counted over the posts this feed already holds.',
         samples: [{ uri: 'at://1', handle: 'ann', text: 'fresh coffee', matched: 'coffee' }] } }
+    }
+    else if (url === '/admin/post/delete') {
+      const asked = JSON.parse(init.body).input
+      deletes.push(asked)
+      body = asked.includes('nothere')
+        ? { ok: true, result: { uri: 'at://did:plc:a/app.bsky.feed.post/9', handle: '',
+            text: '', removed: 0, feeds: [], pinnedOn: [], dump: null } }
+        : { ok: true, result: { uri: 'at://did:plc:a/app.bsky.feed.post/2',
+            handle: 'ann.example', text: 'a post nobody wanted', removed: 2,
+            feeds: [{ key: 'coffee', displayName: 'Coffee', indexedAt: '2026-08-04T10:00:00.000Z' },
+                    { key: 'radio', displayName: 'Radio', indexedAt: '2026-08-04T10:00:00.000Z' }],
+            pinnedOn: asked.includes('pinned') ? ['radio'] : [],
+            dump: '/data/purged-20260904T101500Z.json' } }
     }
     else if (url === '/admin/whynot' && JSON.parse(init.body).input.includes('blocked')) {
       // The case the whole panel exists for: a post that matched its way in and
@@ -1054,6 +1068,59 @@ const run = async () => {
   check('...and marks nothing in the preview',
     walk(app).filter((e) => e.className === 'hitmark').length === 0)
 
+  // One field, one button, no dialog — so the guarantees have to come from
+  // what it does before and after the call, not from a confirmation.
+  console.log('\n── Delete a post')
+  const delBtn = walk(panelOf('lab')).find((e) => e.textContent === 'Delete')!
+  check('the button is on the Lab tab', !!delBtn)
+  check('...wearing the danger paint, not a default button',
+    delBtn.className === 'destroy')
+  check('...as an h2 above a card, like every other section there',
+    walk(panelOf('lab')).some((e) =>
+      e.tagName === 'H2' && e.textContent === 'Delete a post'))
+  // It WRITES, and this tab puts what writes above what only reads.
+  const labOrder = textOf(panelOf('lab'))
+  check('...among the writing controls, ahead of the diagnostics',
+    labOrder.indexOf('Delete a post') < labOrder.indexOf('Why is this post (not) in a feed?'))
+  check('...saying it touches no filter and needs no save',
+    labOrder.includes('no filter is touched'))
+
+  const delField = delBtn.parent!.children[0]
+  const beforeDeletes = deletes.length
+  delField.value = '   '
+  delBtn.handlers['click']()
+  await settle()
+  check('an empty field deletes nothing', deletes.length === beforeDeletes)
+
+  delField.value = 'https://bsky.app/profile/ann.example/post/2'
+  delBtn.handlers['click']()
+  await settle()
+  check('...a pasted link is sent as typed',
+    deletes[beforeDeletes] === 'https://bsky.app/profile/ann.example/post/2')
+  const afterDelete = textOf(panelOf('lab'))
+  check('...and the answer names every feed it left',
+    afterDelete.includes('Coffee') && afterDelete.includes('Radio'))
+  // What stands in for a confirmation dialog: the post is described back, so a
+  // mis-paste is visible immediately instead of being confirmed blind.
+  check('...naming the author it actually deleted', afterDelete.includes('@ann.example'))
+  check('...and quoting the post', afterDelete.includes('a post nobody wanted'))
+  check('the field is cleared, so the spent link cannot be sent twice',
+    delField.value === '')
+
+  delField.value = 'https://bsky.app/profile/ann.example/post/nothere'
+  delBtn.handlers['click']()
+  await settle()
+  const missed = walk(panelOf('lab')).find((e) =>
+    (e.textContent || '').includes('not in any feed on this box'))!
+  check('a post that was not there says so', !!missed)
+  check('...as a warning, not as a success', missed.className.includes('warn'))
+
+  delField.value = 'https://bsky.app/profile/ann.example/post/pinned'
+  delBtn.handlers['click']()
+  await settle()
+  check('deleting a PINNED post warns that the pin still shows it',
+    textOf(panelOf('lab')).includes('PINNED on radio'))
+
   console.log('\n── the new-feed wizard')
   const newBtn = walk(app).find((e) => e.textContent === '+ New feed')!
   check('there is a way in', !!newBtn)
@@ -1570,9 +1637,12 @@ const run = async () => {
   // credentials just typed, where Save only touches a file here. Filled red by
   // request — an outline is mostly card colour whatever its border does, which
   // is why the first attempt still read as brick rather than as a danger zone.
+  // The paint is shared with Delete, which does not leave the box but cannot be
+  // undone either. Two class names, one rule: the names carry the two different
+  // reasons, and the declaration stays in one place.
   check('the button that writes to your PDS is marked as the danger it is',
     publish.className === 'outgoing' &&
-      css.includes('button.outgoing { background: var(--danger); border-color: var(--danger);') &&
+      css.includes('button.outgoing, button.destroy { background: var(--danger); border-color: var(--danger);') &&
       css.includes('color: var(--on-fill); font-weight: 600; }'),
     publish.className)
   // --danger is an action colour and --bad is status text; they are different

@@ -17,6 +17,7 @@ import { looksLikeSecret, totpConfig } from './adminTotp'
 import { collectStatus } from './adminStatus'
 import { collectActivity } from './adminActivity'
 import { measureCandidate, probePattern } from './adminLab'
+import { deletePost } from './adminDelete'
 import { explainPost } from './adminWhyNot'
 
 // The admin UI on the PUBLIC app. Off unless FEEDGEN_ADMIN_UI=on, because this
@@ -89,6 +90,7 @@ const mountAdminUi = (
       whyNot: (input) => explainPost(ctx.db, input),
       probe: (feed, p: any) =>
         probePattern(ctx.db, feed, { pattern: p.pattern, flags: p.flags, target: p.target }),
+      deletePost: (input) => deletePost(ctx.db, input),
       identity: {
         publisherDid: ctx.cfg.publisherDid,
         serviceDid: ctx.cfg.serviceDid,

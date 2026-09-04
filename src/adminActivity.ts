@@ -118,15 +118,26 @@ const stampToIso = (m: RegExpMatchArray): string =>
   `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}.000Z`
 
 // The dump records WHY each row went, but not which mode produced it. --blocked
-// writes one fixed string and the targeted modes write two more; anything else
-// is a filter verdict, which since af2a4b5 names the word that fired.
+// writes one fixed string, the targeted modes write two more and the admin
+// page's delete button a fourth; anything else is a filter verdict, which since
+// af2a4b5 names the word that fired.
 //
 // This is inference, not a recorded field, so the raw `why` travels with every
 // row: if purgePosts ever changes the wording the label degrades to "filter"
 // while the actual reason stays on screen.
 const kindOf = (why: string): PurgeKind => {
   if (why === 'on moderation list') return 'blocklist'
-  if (why === 'author' || why === 'named uri' || why === 'not retrievable') return 'manual'
+  if (
+    why === 'author' ||
+    why === 'named uri' ||
+    why === 'not retrievable' ||
+    // The admin page's Delete post button. Its own wording rather than
+    // purgePosts' "named uri", so a removal someone made by pressing a button
+    // is not read back as a command-line sweep.
+    why === 'deleted by hand'
+  ) {
+    return 'manual'
+  }
   return why ? 'filter' : 'unknown'
 }
 

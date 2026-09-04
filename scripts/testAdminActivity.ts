@@ -223,6 +223,15 @@ const run = async () => {
   check('and so do the bars', feedIn(b, 'coffee').purged[13], 150)
   check('a targeted sweep reads as manual', big.kind, 'manual')
 
+  // The admin page's Delete post button writes a dump like any other removal,
+  // in its own words. If this ever falls out of step the removal is still shown
+  // — it just gets labelled a filter sweep, which is the one thing it is not.
+  dump('20260809T183000Z', [row('coffee', 'byhand', '2026-08-09T09:00:00.000Z', 'deleted by hand')])
+  const withHand = await collectActivity(db, NOW)
+  const byHand = withHand.events.filter((e) => e.at === '2026-08-09T18:30:00.000Z')[0]
+  check('a post deleted from the admin page reads as manual too', byHand.kind, 'manual')
+  check('...keeping its own wording on screen', byHand.rows[0].why, 'deleted by hand')
+
   // ── withheld ──────────────────────────────────────────────────────────
   console.log('\n── sweeps the safety cap refused')
   fs.writeFileSync(

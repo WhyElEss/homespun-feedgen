@@ -164,8 +164,12 @@ export const ADMIN_PAGE = `<!doctype html>
      is the only part large enough to carry the colour. Both users of the class
      publish to the PDS, so both are right to wear it.
      It is not a one-click hazard: a handle and an app password have to be typed
-     into the two fields above it before this button can do anything at all. */
-  button.outgoing { background: var(--danger); border-color: var(--danger);
+     into the two fields above it before this button can do anything at all.
+     .destroy is the same paint for a different reason — it does not leave the
+     box, it removes a row from the database and cannot be undone. Kept as its
+     own class rather than dressing a delete button as "outgoing", because the
+     name is what the next reader goes by. It IS one click, deliberately. */
+  button.outgoing, button.destroy { background: var(--danger); border-color: var(--danger);
                     color: var(--on-fill); font-weight: 600; }
   button:disabled { opacity: .55; cursor: default; }
   /* 16px on every control, always, and NEVER via 'font: inherit'.
@@ -1470,10 +1474,11 @@ export const ADMIN_PAGE = `<!doctype html>
     // titled Record over a heading over a card saying the same thing three
     // times was three times too many.
     hosts.record.appendChild(recordHost);
-    // First on the tab, ahead of the two diagnostics. It is the only thing here
-    // that WRITES, and a control buried under two read-only panels is the
-    // "nobody knows it exists" failure the bridgedPosts toggle already cost us.
+    // The two things on this tab that WRITE go first, ahead of the two
+    // diagnostics: a control buried under two read-only panels is the "nobody
+    // knows it exists" failure the bridgedPosts toggle already cost us.
     hosts.lab.appendChild(pinHost);
+    renderDeletePost(hosts.lab);
     // whyNot before the probe, on the user's call. They answer different
     // questions and the order says which one the tab is for: whyNot starts
     // from a post you have in front of you, which is what brings anyone here;
@@ -2873,8 +2878,8 @@ export const ADMIN_PAGE = `<!doctype html>
             ? 'But it IS stored — the config changed after this post was seen. ' +
               'auto-purge sweeps that on its own 5-minute clock (:00, :05, ' +
               ':10 …); a filter edit does not trigger it.'
-            : 'But it is NOT stored — most often retention pruned it, or it ' +
-              'arrived while the config was different.';
+            : 'But it is NOT stored — retention pruned it, it was deleted by ' +
+              'hand, or it arrived while the config was different.';
         }
 
         // The feed being edited gets the whole answer (mine/others were split
@@ -2954,6 +2959,111 @@ export const ADMIN_PAGE = `<!doctype html>
           'from the same code the ingest runs, so it cannot disagree with it — ' +
           'and the moderation list and the database are checked on top, since ' +
           '"matches" and "is actually in the feed" are different questions.' }),
+        out, body
+      ]));
+    }
+
+    // ── delete one post, unconditionally
+    //
+    // The only control on this page that acts on a single post rather than on a
+    // rule. Paste the link, press the button, it is gone from every feed on this
+    // box — no filter to edit, no measurement to read, nothing to save.
+    //
+    // NO CONFIRMATION DIALOG, and that is the request rather than an oversight.
+    // The dialog Save used to have was answered yes every time (see the note
+    // above the change list), and this action is one field and one button, both
+    // of which the operator has just looked at. What replaces the dialog is the
+    // answer AFTERWARDS: the deleted post's author and text are printed back,
+    // so a mis-paste is visible immediately instead of being confirmed blind.
+    function renderDeletePost(root) {
+      var input = h('input', { type: 'text',
+        placeholder: 'https://bsky.app/profile/…/post/… — or an at:// URI' });
+      var btn = h('button', { class: 'destroy', text: 'Delete' });
+      var out = h('div', { class: 'msg', role: 'status' });
+      var body = h('div', {}, []);
+
+      function go() {
+        var v = input.value.trim();
+        if (!v) return;
+        btn.disabled = true; body.innerHTML = '';
+        out.className = 'msg'; out.textContent = 'Deleting…';
+        call('post/delete', { body: { input: v } }).then(function (r) {
+          return r.json().then(function (b) { return { status: r.status, body: b }; });
+        }).then(function (res) {
+          btn.disabled = false;
+          if (res.status !== 200) {
+            out.className = 'msg bad'; out.textContent = res.body.error; return;
+          }
+          // Cleared on success only: the field holds a link that is now spent,
+          // and leaving it there invites a second press that can only report
+          // "not in any feed" and read as a failure.
+          input.value = '';
+          show(res.body.result);
+        }).catch(function (e) {
+          btn.disabled = false;
+          out.className = 'msg bad'; out.textContent = 'Network error: ' + e.message;
+        });
+      }
+      btn.addEventListener('click', go);
+      input.addEventListener('keydown', function (e) { if (e.key === 'Enter') go(); });
+
+      function show(r) {
+        body.innerHTML = '';
+        var where = r.feeds.map(function (f) { return f.displayName || f.key; });
+        if (r.removed) {
+          out.className = 'msg ok';
+          out.textContent = 'Gone — removed from ' + where.join(', ') + '.';
+        } else {
+          // Not an error: the post simply was not here. Said plainly, because
+          // "nothing happened" and "it worked" must not look the same.
+          out.className = 'msg warn';
+          out.textContent = 'That post is not in any feed on this box — ' +
+            'nothing to delete. It may have been pruned already, or never matched.';
+        }
+
+        var kids = [h('dl', {}, [
+          kv('Author', r.handle ? '@' + r.handle : '(not retrievable — deleted upstream)'),
+          kv('Post', r.uri)
+        ])];
+        if (r.text) kids.push(h('p', { class: 'small', text: r.text }));
+        if (r.removed) {
+          kids.push(h('p', { class: 'small muted', text:
+            'Removed from ' + r.removed + (r.removed === 1 ? ' feed' : ' feeds') +
+            ' — it is out of the feed as soon as the next request is served. ' +
+            'Nothing re-reads old posts, so it stays out; only a cursor rewind, ' +
+            'which replays the firehose, could bring it back.' }));
+        }
+        // The pin is config, not a row, so deleting the row does not un-pin it
+        // and the post would keep appearing at the top of that feed. Whoever
+        // pressed this would reasonably call that broken.
+        if (r.pinnedOn && r.pinnedOn.length) {
+          kids.push(h('p', { class: 'small warn-text', text:
+            'This post is PINNED on ' + r.pinnedOn.join(', ') + '. A pin is ' +
+            'config, not a stored row, so it will keep appearing at the top of ' +
+            'that feed until you un-pin it above.' }));
+        }
+        body.appendChild(h('div', { class: 'card pad' }, kids));
+
+        // The panel below may be showing this very post, with "in the database"
+        // next to it. Correct it in place rather than leaving an answer on
+        // screen that this button just made false.
+        if (lastWhy && lastWhy.uri === r.uri && r.removed) {
+          lastWhy.feeds.forEach(function (f) {
+            f.stored = false; f.disagrees = f.wouldIndex;
+          });
+          redrawWhy();
+        }
+      }
+
+      root.appendChild(h('h2', { text: 'Delete a post' }));
+      root.appendChild(h('div', { class: 'card pad' }, [
+        h('div', { class: 'row wrapx' }, [input, btn]),
+        h('p', { class: 'small muted', text:
+          'Removes this post from every feed on this box, immediately and ' +
+          'without asking anything else — no filter is touched and nothing ' +
+          'needs saving. It is not undoable, and it does not stop a similar ' +
+          'post arriving tomorrow: that is what a filter or the moderation ' +
+          'list is for. The removal is recorded on the Activity tab.' }),
         out, body
       ]));
     }
