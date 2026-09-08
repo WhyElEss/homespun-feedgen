@@ -1078,14 +1078,21 @@ export const ADMIN_PAGE = `<!doctype html>
       return n;
     }
 
-    // The bars follow the picker; this list deliberately does NOT. A blocklist
-    // entry sweeps whichever feeds the account reached, and hiding the ones you
-    // do not happen to have selected would recreate, one level up, exactly the
-    // blind spot this card was built to close. Each row names its feeds — but
-    // under a chart headed "Radio", a row reading "Coffee 4" needs the scope
-    // said out loud rather than inferred.
-    // A sweep that never touched this feed has nothing to say here.
+    // EVERYTHING BELOW IS THE SELECTED FEED AND NOTHING ELSE — the house rule
+    // for this page. A sweep that never touched this feed has nothing to say
+    // here, and neither has one the cap refused in a different feed: a row
+    // reading "Radio: 2 of 7" under a card headed "Coffee" is another feed's
+    // business wearing this feed's heading, which is exactly what the picker
+    // is for. Naming the feed in the row is not a substitute for not showing
+    // it — that attribution was added first, and it made the leak look handled
+    // while the row was still the wrong feed's.
+    // Records written before sweeps became per-feed carry box-wide counts and
+    // no feed at all, so they cannot be attributed to the selected one; they
+    // appear only in the unscoped view.
     events = events.filter(function (e) { return countFor(e) !== null; });
+    withheld = withheld.filter(function (w) {
+      return !activityFeed || w.feed === activityFeed;
+    });
     var list = h('div', {}, []);
     if (events.length || withheld.length) {
       card.appendChild(h('div', { class: 'gtitle actlist', text: 'Purges — ' +

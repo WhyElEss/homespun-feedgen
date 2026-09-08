@@ -176,9 +176,13 @@ const ACTIVITY = {
     withheld: [
       { at: HOURS24[18] + ':05:00.000Z', mode: 'rejected', feed: 'coffee',
         count: 180, stored: 1400, limit: 25 },
+      // Another feed's refused sweep. It must not appear under this card at
+      // all: naming the feed in the row was never enough, and a card headed
+      // for one feed listing another feed's refusals is what this pins shut.
+      { at: HOURS24[19] + ':05:00.000Z', mode: 'rejected', feed: 'radio',
+        count: 2, stored: 7, limit: 1 },
       // No feed: written before auto-purge swept one feed at a time, so its
-      // counts are box-wide and the row must say so instead of showing them
-      // under whichever feed is selected.
+      // counts are box-wide and cannot be attributed to the selected feed.
       { at: HOURS24[17] + ':05:00.000Z', mode: 'rejected', feed: '',
         count: 103, stored: 1635, limit: 25 },
     ],
@@ -571,8 +575,15 @@ const run = async () => {
   // that used to appear under any selected feed is what produced "103 of 1635"
   // under a feed holding 249 posts.
   check('...scoped to the feed it was refused for', actText().includes('Coffee: 180 of 1400'))
-  check('a record with no feed says its counts are box-wide',
-    actText().includes('predates per-feed sweeps'))
+  check('...and another feed\'s refused sweep is not in this card at all',
+    !actText().includes('Radio: 2 of 7') && !actText().includes('2 of 7'))
+  // Box-wide counts cannot be attributed to the selected feed, so they are not
+  // shown under it. This check pinned the opposite until 2026-09-08, when the
+  // row was scoped: a legacy record used to sit under whichever feed happened
+  // to be selected, saying its numbers were box-wide.
+  check('a record with no feed is not shown under a selected feed',
+    !actText().includes('predates per-feed sweeps') &&
+      !actText().includes('103 of 1635'))
 
   const outLinks = find(actCard, 'a').filter((a) => (a.attrs.href || '').includes('bsky.app'))
   check('a removed post can still be opened', outLinks.length === 5)
@@ -1434,7 +1445,7 @@ const run = async () => {
   const listInput = find(app, 'input').find((i) =>
     (i.attrs.placeholder || '').indexOf('/lists/') >= 0)!
   check('the field asks for a link, not only a URI', !!listInput)
-  listInput.value = 'https://bsky.app/profile/stanislavski.me/lists/3msv'
+  listInput.value = 'https://bsky.app/profile/ann.example/lists/3msv'
   listInput.handlers['blur']()
   await settle()
   check('...and blurring resolves it', resolvedLists.length === 1)
