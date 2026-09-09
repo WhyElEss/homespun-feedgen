@@ -1,7 +1,7 @@
 import dotenv from 'dotenv'
 import fs from 'node:fs'
 import { createDb } from '../src/db'
-import { loadCorpus, StoredPost } from '../src/adminLab'
+import { loadCorpus, StoredPost, autoPurgeLimit } from '../src/adminLab'
 import { loadFiltersOnce, Target } from '../src/filter'
 
 // "How many stored posts would this pattern take, and which ones?" — asked of a
@@ -43,11 +43,11 @@ import { loadFiltersOnce, Target } from '../src/filter'
 dotenv.config()
 
 // Keep in step with scripts/auto-purge.sh: the sweep is withheld when it would
-// take more than the SMALLER of 25 rows and 5% of what the feed holds.
-const AUTO_PURGE_MAX_ABS = 25
-const AUTO_PURGE_MAX_PCT = 5
-export const autoPurgeLimit = (stored: number): number =>
-  Math.max(1, Math.min(Math.floor((stored * AUTO_PURGE_MAX_PCT) / 100), AUTO_PURGE_MAX_ABS))
+// take more than the SMALLER of 25 rows and 5% of what the feed holds — but
+// never fewer than 5, or a small feed cannot be swept at all. Re-exported from
+// adminLab rather than written out again here: this used to be a second copy
+// of the same arithmetic, and the two are only ever right together.
+export { autoPurgeLimit }
 
 export type Candidate = { name: string; pattern: string }
 export type ProbeSpec = {

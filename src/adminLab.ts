@@ -175,6 +175,23 @@ export type LabResult = {
 // having in advance. Keep in step with scripts/auto-purge.sh.
 const AUTO_PURGE_MAX_ABS = 25
 const AUTO_PURGE_MAX_PCT = 5
+// ...and the floor, without which a SMALL feed cannot be swept at all. The
+// proportional rule asks "is this share of the feed suspicious?", a question
+// that has no meaning below about twenty rows: at 7 stored posts 5% floors to
+// zero, the old `max(1, …)` made the cap ONE row, and an ordinary two-row
+// correction was refused six times in a row with nothing wrong with it. The
+// floor says instead: a sweep this small is never suspicious, whatever share
+// of a nearly empty feed it happens to be. A runaway pattern that would take
+// the whole feed is still over the floor and still withheld.
+const AUTO_PURGE_MIN_ABS = 5
+
+// One formula, three consumers: this module's two warnings and probeCorpus.
+// It used to be written out separately in each, which is how a limit drifts.
+export const autoPurgeLimit = (stored: number): number =>
+  Math.max(
+    AUTO_PURGE_MIN_ABS,
+    Math.min(Math.floor((stored * AUTO_PURGE_MAX_PCT) / 100), AUTO_PURGE_MAX_ABS),
+  )
 
 export type ProbeResult = {
   feed: string
@@ -246,7 +263,7 @@ export const probePattern = async (
     stored,
     hits,
     hitsPct: Math.round(hitsPct * 10) / 10,
-    wouldExceedAutoPurgeCap: hits > AUTO_PURGE_MAX_ABS || hitsPct > AUTO_PURGE_MAX_PCT,
+    wouldExceedAutoPurgeCap: hits > autoPurgeLimit(stored),
     samples,
     cachedAt: new Date(corpus.at).toISOString(),
     note:
@@ -316,8 +333,7 @@ export const measureCandidate = async (
     keptAfter,
     removed,
     removedPct: Math.round(removedPct * 10) / 10,
-    wouldExceedAutoPurgeCap:
-      removed > AUTO_PURGE_MAX_ABS || removedPct > AUTO_PURGE_MAX_PCT,
+    wouldExceedAutoPurgeCap: removed > autoPurgeLimit(stored),
     samples,
     cachedAt: new Date(corpus.at).toISOString(),
     note:

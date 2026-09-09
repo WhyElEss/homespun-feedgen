@@ -65,15 +65,28 @@ check('the union is not the sum — it counts posts, not hits',
   r.union === 3, String(r.union))
 
 console.log('\n── the auto-purge cap, mirrored from auto-purge.sh')
-// LIMIT = min(5% of stored, 25), never below 1 — the SMALLER of the two, which
-// "25 posts or 5%" does not say out loud.
+// LIMIT = min(5% of stored, 25), and never below 5 — the SMALLER of the first
+// two, which "25 posts or 5%" does not say out loud, and then a FLOOR, which is
+// the part a small feed lives or dies by.
 check('5% while that is the smaller', autoPurgeLimit(200) === 10, String(autoPurgeLimit(200)))
 check('...capped at 25 once 5% exceeds it', autoPurgeLimit(1000) === 25, String(autoPurgeLimit(1000)))
-check('...never zero on a tiny feed', autoPurgeLimit(3) === 1, String(autoPurgeLimit(3)))
-check('a sweep at the limit is allowed', !runProbe(
-  CORPUS, { candidates: [{ name: 'one', pattern: 'steam' }] }).candidates[0].withheldIfSwept)
-check('...and one over it is flagged as withheld', runProbe(
-  CORPUS, { candidates: [{ name: 'most', pattern: 'window' }] }).candidates[0].withheldIfSwept)
+check('...the floor wins below 100 stored', autoPurgeLimit(140) === 7, String(autoPurgeLimit(140)))
+// The case this floor was added for: a feed held 7 posts, 5% of that floors to
+// 0, and the old max(1, …) made an ordinary 2-row correction impossible —
+// refused six times in a row over two days.
+check('...a 7-post feed can still be swept', autoPurgeLimit(7) === 5, String(autoPurgeLimit(7)))
+check('...and never zero on a tiny feed', autoPurgeLimit(3) === 5, String(autoPurgeLimit(3)))
+
+// The plumbing, on a corpus big enough that the PROPORTIONAL rule is the one
+// being tested rather than the floor: 200 posts, so the limit is 10.
+const bulk = (matching: number): StoredPost[] =>
+  Array.from({ length: 200 }, (_, i) =>
+    post(`u${i}`, i < matching ? 'a sleeve for sale' : 'an ordinary post'))
+const sweepOf = (matching: number) =>
+  runProbe(bulk(matching), { candidates: [{ name: 'for sale', pattern: 'for sale' }] })
+check('the limit is reported with the reading', sweepOf(10).limit === 10, String(sweepOf(10).limit))
+check('a sweep at the limit is allowed', !sweepOf(10).candidates[0].withheldIfSwept)
+check('...and one over it is flagged as withheld', sweepOf(11).candidates[0].withheldIfSwept)
 
 console.log('\n── expectations')
 const r2 = runProbe(CORPUS, {
@@ -133,7 +146,7 @@ check('...naming the candidate', msg.includes('broken one'), msg)
 console.log('\n── an empty corpus does not divide by zero')
 const r5 = runProbe([], { candidates: [{ name: 'c', pattern: 'x' }] })
 check('no NaN in the percentage', r5.candidates[0].hitsPct === 0)
-check('...and the limit is still at least 1', r5.limit === 1)
+check('...and the limit is the floor, not zero', r5.limit === 5, String(r5.limit))
 
 console.log(pass === total ? `\nAll ${total} checks passed` : `\n${total - pass} of ${total} FAILED`)
 process.exit(pass === total ? 0 : 1)

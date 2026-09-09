@@ -15,7 +15,8 @@
 #
 # SAFETY: a valid-but-wrong regex passes hot-reload validation and would delete
 # the feed. So every run is a dry run first, and the deletion is applied only if
-# the count is below both an absolute and a proportional limit. Over the limit,
+# the count is below both an absolute and a proportional limit — and above a
+# floor, without which a small feed cannot be swept at all. Over the limit,
 # nothing is touched and a notification goes out for a human to look.
 #
 # Runs on the HOST (it drives docker), one copy per box, each watching its own
@@ -33,6 +34,7 @@ LOG="$STATE_DIR/auto-purge.log"
 NTFY_TOPIC="${NTFY_TOPIC:-}"          # unset = log only, never notify
 MAX_ABS="${AUTO_PURGE_MAX_ABS:-25}"     # never auto-delete more rows than this
 MAX_PCT="${AUTO_PURGE_MAX_PCT:-5}"      # ...nor more than this share of stored rows
+MIN_ABS="${AUTO_PURGE_MIN_ABS:-5}"      # ...but a sweep this small is never suspicious
 NOTIFY_EVERY=21600                      # 6h, same throttle as the parity check
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG"; }
@@ -212,9 +214,17 @@ for m in "${MODES[@]}"; do
     # line per feed per trigger would bury the runs that did something.
     [ "$COUNT" -eq 0 ] && continue
 
+    # The proportional rule asks "is this share of the feed suspicious?", and
+    # below about twenty rows that question has no meaning: at 7 stored posts
+    # 5% floors to zero, the old `max(1, …)` made the cap ONE row, and an
+    # ordinary two-row correction on a seven-post feed was refused six times
+    # over two days with nothing whatever wrong with it. MIN_ABS says the other
+    # half out loud — a sweep this small is never suspicious, whatever share of
+    # a nearly empty feed it happens to be. A runaway pattern taking the whole
+    # feed is still over the floor and still withheld.
     LIMIT_PCT=$(( STORED * MAX_PCT / 100 ))
     LIMIT=$(( LIMIT_PCT < MAX_ABS ? LIMIT_PCT : MAX_ABS ))
-    [ "$LIMIT" -lt 1 ] && LIMIT=1
+    [ "$LIMIT" -lt "$MIN_ABS" ] && LIMIT="$MIN_ABS"
 
     if [ "$COUNT" -gt "$LIMIT" ]; then
       log "--$m $feed: WITHHELD, would delete $COUNT of $STORED (limit $LIMIT)"
