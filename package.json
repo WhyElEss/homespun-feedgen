@@ -22,6 +22,7 @@
     "test:media": "ts-node scripts/testMedia.ts",
     "test:gif": "ts-node scripts/testGif.ts",
     "test:probe": "ts-node scripts/testProbeCorpus.ts",
+    "test:hoist": "ts-node scripts/testHoistPatterns.ts",
     "test:preview": "ts-node scripts/testPreviewAdminPage.ts",
     "repointFeed": "ts-node scripts/repointFeed.ts",
     "restoreFeed": "ts-node scripts/restoreFeed.ts",
