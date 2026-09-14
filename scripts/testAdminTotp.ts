@@ -222,8 +222,23 @@ const run = async () => {
       String(wrong.body.error).includes('time'))
     check('...leaving it off', (await call('/totp/status')).body.enabled === false)
 
+    // A second browser, signed in on the password alone before the factor
+    // existed. It must not outlive the decision that the password is not enough.
+    const elsewhere = (
+      (await fetch(`${url}/api/login`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ user: USER, password: PASSWORD }),
+      })).headers.get('set-cookie') ?? ''
+    ).split(';')[0]
+    const elsewhereStatus = async () =>
+      (await fetch(`${url}/totp/status`, { headers: { cookie: elsewhere } })).status
+    check('(a second browser is signed in on the password alone)', (await elsewhereStatus()) === 200)
+
     const enabled = await call('/totp/enable', { code: codeFor(begun.body.secret) })
     check('the right code enables it', enabled.status === 200)
+    check('...signs out the browser that got in without a code', (await elsewhereStatus()) === 401)
+    check('...keeps the one that just proved a code', (await call('/totp/status')).status === 200)
+    check('...and says so', String(enabled.body.note).includes('signed out'))
     const st = await call('/totp/status')
     check('...status agrees', st.body.enabled === true && st.body.source === 'file')
     check('...and the file is written 0600',

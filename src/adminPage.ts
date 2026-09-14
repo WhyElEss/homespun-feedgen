@@ -3765,6 +3765,105 @@ export const ADMIN_PAGE = `<!doctype html>
     return box;
   }
 
+  // Every browser signed in to this page. A sign-in lasts a fixed number of
+  // days however it is used, so this list is what stands in for the idle
+  // timeout that used to end a session after an hour — and made every visit a
+  // full password-and-code login.
+  function renderSessions() {
+    var box = h('div', { class: 'card pad' }, []);
+    var out = h('div', { class: 'msg', role: 'status' });
+    var body = h('div', {}, []);
+
+    function refresh() {
+      api('sessions').then(function (r) {
+        if (r.status === 401) return;
+        return r.json().then(function (b) {
+          if (!b || !b.ok) throw new Error((b && b.error) || 'unexpected reply');
+          draw(b);
+        });
+      }).catch(function (e) {
+        out.className = 'msg bad'; out.textContent = 'Could not list sessions: ' + e.message;
+      });
+    }
+
+    function signOut(path, payload, done) {
+      out.className = 'msg'; out.textContent = 'Signing out…';
+      api(path, payload).then(function (r) {
+        return r.json().then(function (b) { return { status: r.status, body: b }; });
+      }).then(function (res) {
+        if (res.status !== 200) {
+          out.className = 'msg bad'; out.textContent = res.body.error;
+        } else {
+          out.className = 'msg ok'; out.textContent = done(res.body);
+        }
+        refresh();
+      }).catch(function (e) {
+        out.className = 'msg bad'; out.textContent = 'Network error: ' + e.message;
+      });
+    }
+
+    function draw(b) {
+      body.innerHTML = '';
+      var n = b.sessions.length;
+      var others = b.sessions.filter(function (s) { return !s.current; }).length;
+      body.appendChild(h('div', { class: 'row wrapx' }, [
+        h('span', { class: 'pill idle',
+                    text: n + (n === 1 ? ' browser signed in' : ' browsers signed in') }),
+        h('span', { class: 'small muted', text:
+          'a sign-in lasts ' + b.ttlDays + ' days, however often it is used' })
+      ]));
+
+      var rows = b.sessions.map(function (s) {
+        var action;
+        if (s.current) {
+          action = h('span', { class: 'pill ok', text: 'this browser' });
+        } else {
+          action = h('button', { text: 'Sign out' });
+          action.addEventListener('click', function () {
+            action.disabled = true;
+            signOut('sessions/revoke', { id: s.id }, function () {
+              return s.agent + ' is signed out.';
+            });
+          });
+        }
+        var left = Math.round((Date.parse(s.expires) - Date.now()) / 1000);
+        return h('tr', {}, [
+          h('td', { text: s.agent }),
+          h('td', { text: s.ip }),
+          h('td', { text: since(s.created) }),
+          h('td', { text: s.current ? 'now' : since(s.lastSeen) }),
+          h('td', { text: 'in ' + ago(left) }),
+          h('td', {}, [action])
+        ]);
+      });
+      var head = h('tr', {}, ['Browser', 'Address', 'Signed in', 'Last used', 'Ends', '']
+        .map(function (t) { return h('th', { text: t }); }));
+      body.appendChild(h('div', { class: 'wrap' }, [
+        h('table', {}, [h('thead', {}, [head]), h('tbody', {}, rows)])
+      ]));
+
+      if (others > 0) {
+        var all = h('button', { text: 'Sign out everywhere else' });
+        all.addEventListener('click', function () {
+          all.disabled = true;
+          signOut('sessions/revoke-others', {}, function (res) {
+            return res.revoked + (res.revoked === 1 ? ' browser' : ' browsers') + ' signed out.';
+          });
+        });
+        body.appendChild(h('div', { class: 'toolbar' }, [all]));
+      }
+      if (!b.persisted) {
+        body.appendChild(h('p', { class: 'small muted', text:
+          'Kept in memory only on this box — a restart signs everyone out.' }));
+      }
+    }
+
+    box.appendChild(body);
+    box.appendChild(out);
+    refresh();
+    return box;
+  }
+
   // Does the identity Bluesky resolves still match this box? Read-only, and on
   // a button rather than in the refresh, so a slow plc.directory can never
   // stall the page.
@@ -3961,6 +4060,8 @@ export const ADMIN_PAGE = `<!doctype html>
         securityPane.innerHTML = '';
         securityPane.appendChild(h('h2', { text: 'Security' }));
         securityPane.appendChild(renderTotp());
+        securityPane.appendChild(h('h2', { text: 'Signed in' }));
+        securityPane.appendChild(renderSessions());
         // Built once. Its own Reload button is how it refetches.
         if (!editor) editor = renderConfigEditor(b.status, hosts);
         paintBar();

@@ -293,8 +293,17 @@ export const createAdminRouter = (opts: AdminRouterOptions = {}): express.Router
         return
       }
       pending = null
-      console.log('admin: two-factor enabled')
-      res.json({ ok: true, note: 'Two-factor is on. It applies to the next sign-in.' })
+      // Every other session got in on the password alone. Leaving them open
+      // would let a stolen one outlive the decision that the password is not
+      // enough. This browser just proved a code, so it stays.
+      const revoked = auth ? auth.revokeOthers(req) : 0
+      console.log(`admin: two-factor enabled${revoked ? `, ${revoked} other session(s) signed out` : ''}`)
+      res.json({
+        ok: true,
+        note:
+          'Two-factor is on. It applies to the next sign-in' +
+          (revoked ? ` — ${revoked} other signed-in browser(s) were signed out.` : '.'),
+      })
     })
 
     // Turning it OFF asks for both factors again on purpose: a hijacked session

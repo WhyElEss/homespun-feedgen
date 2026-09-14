@@ -1,4 +1,5 @@
 import crypto from 'node:crypto'
+import fs from 'node:fs'
 import express from 'express'
 import { verifyTotp, TotpConfig } from './adminTotp'
 
@@ -11,9 +12,20 @@ import { verifyTotp, TotpConfig } from './adminTotp'
 //     ASYNCHRONOUSLY — this process also ingests the firehose, and a synchronous
 //     scrypt would stall ingestion for the ~100 ms it takes on a Pi;
 //   * sessions live server-side and the cookie carries nothing but a random
-//     token, so there is no signature to forge and no payload to tamper with.
-//     A restart logs everyone out, which is the right trade for a service that
-//     restarts rarely;
+//     token, so there is no signature to forge and no payload to tamper with;
+//   * a session lasts 30 days from sign-in, however it is used. It used to die
+//     after an hour idle, which meant a full password + code every single visit
+//     for someone who looks in a few times a week — protection that trains
+//     people to hate the page. The lifetime is ABSOLUTE, not sliding, so a
+//     stolen cookie is worth at most 30 days, and every session can be listed
+//     and signed out from the Security tab;
+//   * sessions are kept on disk (when a store path is given) so a rebuild or a
+//     restart does not sign everyone out. The file holds a SHA-256 of each
+//     token, never the token: it rides along in every backup bundle, and a
+//     copy of it must not be a copy of the cookies;
+//   * a session is bound to the credentials it was created with. Change the
+//     password hash (or a .env second factor) and every existing session is
+//     void on the next request;
 //   * failed logins are rate limited per IP *and* globally. The per-IP limit is
 //     the useful one behind the tunnel, where Cloudflare gives us a real client
 //     address; the global one is what still holds if someone reaches the service
@@ -126,9 +138,16 @@ export type AuthOptions = {
   // Read on every login, not captured once: enabling or disabling the second
   // factor from the UI must take effect without a restart.
   totp?: () => TotpConfig
-  // Absolute lifetime of a session, and how long it may sit idle.
+  // Absolute lifetime of a session, and how long it may sit idle. Idle is off
+  // by default — see the header.
   sessionTtlMs?: number
   sessionIdleMs?: number
+  // Where sessions survive a restart. Unset keeps them in memory only, which
+  // is what the tests and the loopback listener want.
+  sessionStore?: string
+  // Anything besides the password hash that should void every session when it
+  // changes — the server passes a .env TOTP secret, which also needs a restart.
+  sessionBinding?: string
   // Failed logins tolerated per client, and in total, inside one window.
   maxFailuresPerIp?: number
   maxFailuresGlobal?: number
@@ -137,17 +156,56 @@ export type AuthOptions = {
   cookiePath?: string
 }
 
-type Session = { created: number; lastSeen: number; ip: string }
+type Session = {
+  created: number
+  lastSeen: number
+  ip: string
+  agent: string
+  // Fingerprint of the credentials this session was created under.
+  binding: string
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
 
 const DEFAULTS = {
   user: 'admin',
-  sessionTtlMs: 12 * 60 * 60 * 1000,
-  sessionIdleMs: 60 * 60 * 1000,
+  sessionTtlMs: 30 * DAY_MS,
+  sessionIdleMs: Infinity,
   maxFailuresPerIp: 5,
   maxFailuresGlobal: 20,
   failureWindowMs: 15 * 60 * 1000,
   cookieName: 'feedgen_admin',
   cookiePath: '/admin',
+}
+
+// lastSeen moves on every request; writing the file each time would put an SD
+// card write behind every click. Losing up to this much of "last used" on a
+// crash is harmless — expiry runs off `created`, which is written at sign-in.
+const PERSIST_LAST_SEEN_EVERY_MS = 10 * 60 * 1000
+
+const sha256 = (s: string): string => crypto.createHash('sha256').update(s).digest('hex')
+
+// The list on the Security tab exists to tell one browser from another, so it
+// needs a name a person recognises — not a 200-character User-Agent. Only the
+// label is stored.
+export const describeAgent = (ua: string | undefined): string => {
+  const s = String(ua ?? '')
+  const browser =
+    /Edg\//.test(s) ? 'Edge'
+    : /Firefox\//.test(s) ? 'Firefox'
+    : /(Chrome|CriOS)\//.test(s) ? 'Chrome'
+    : /Safari\//.test(s) ? 'Safari'
+    : null
+  const os =
+    /iPhone/.test(s) ? 'iPhone'
+    : /iPad/.test(s) ? 'iPad'
+    : /Android/.test(s) ? 'Android'
+    : /Mac OS X|Macintosh/.test(s) ? 'macOS'
+    : /Windows/.test(s) ? 'Windows'
+    : /Linux/.test(s) ? 'Linux'
+    : null
+  if (browser && os) return `${browser} on ${os}`
+  return browser ?? os ?? 'unknown browser'
 }
 
 const parseCookies = (header: string | undefined): Record<string, string> => {
@@ -156,7 +214,13 @@ const parseCookies = (header: string | undefined): Record<string, string> => {
     const eq = part.indexOf('=')
     if (eq < 0) continue
     const name = part.slice(0, eq).trim()
-    if (name) out[name] = decodeURIComponent(part.slice(eq + 1).trim())
+    if (!name) continue
+    try {
+      out[name] = decodeURIComponent(part.slice(eq + 1).trim())
+    } catch {
+      // A malformed escape in some unrelated cookie must not throw out of the
+      // guard and turn into an express 500.
+    }
   }
   return out
 }
@@ -195,6 +259,10 @@ export type AdminAuth = {
   routes: express.Router
   // Exposed for the tests and for the status page's "signed in since" line.
   sessionCount: () => number
+  // Signs out every session except the one making this request. Called when a
+  // second factor is switched on: a session opened with the password alone
+  // must not outlive the decision that the password alone is not enough.
+  revokeOthers: (req: express.Request) => number
   // The configured account name, so routes that build an enrolment URI can
   // label it with something meaningful.
   user: string
@@ -207,18 +275,88 @@ export type AdminAuth = {
 
 export const createAdminAuth = (opts: AuthOptions): AdminAuth => {
   const cfg = { ...DEFAULTS, ...opts }
+  const binding = sha256(`feedgen-admin-session|${cfg.passwordHash}|${cfg.sessionBinding ?? ''}`).slice(0, 32)
+  // Keyed by sha256(token). The token itself exists only in the browser.
   const sessions = new Map<string, Session>()
+  let persistedAt = new Map<string, number>()
   // The last TOTP step accepted. A code is good once — see verifyTotp.
   let lastTotpStep: number | undefined
   const failuresByIp = new Map<string, { count: number; first: number }>()
   let globalFailures = { count: 0, first: 0 }
 
-  const sweep = (now: number) => {
-    for (const [token, s] of sessions) {
-      if (now - s.created > cfg.sessionTtlMs || now - s.lastSeen > cfg.sessionIdleMs) {
-        sessions.delete(token)
+  const expired = (s: Session, now: number) =>
+    now - s.created > cfg.sessionTtlMs ||
+    now - s.lastSeen > cfg.sessionIdleMs ||
+    s.binding !== binding
+
+  const persist = () => {
+    if (!cfg.sessionStore) return
+    const file = cfg.sessionStore
+    const tmp = `${file}.tmp-${process.pid}`
+    const out: Record<string, Session> = {}
+    for (const [key, s] of sessions) out[key] = s
+    try {
+      fs.writeFileSync(tmp, JSON.stringify({ version: 1, sessions: out }, null, 2) + '\n', {
+        mode: 0o600,
+      })
+      fs.renameSync(tmp, file)
+      persistedAt = new Map([...sessions].map(([k, s]) => [k, s.lastSeen]))
+    } catch (err: any) {
+      // The session still works in memory; it just will not survive a restart.
+      console.error(`admin: could not save sessions to ${file}: ${err?.message ?? err}`)
+    }
+  }
+
+  // Anything unreadable starts from nothing. Failing closed here costs one
+  // sign-in; failing open would be a session nobody issued.
+  if (cfg.sessionStore) {
+    const now = Date.now()
+    let raw: string | undefined
+    try {
+      raw = fs.readFileSync(cfg.sessionStore, 'utf8')
+    } catch (err: any) {
+      if (err?.code !== 'ENOENT') {
+        console.warn(`admin: cannot read ${cfg.sessionStore} — starting with no sessions`)
       }
     }
+    if (raw !== undefined) {
+      try {
+        const parsed = JSON.parse(raw)
+        let dropped = 0
+        for (const [key, v] of Object.entries<any>(parsed?.sessions ?? {})) {
+          const s: Session = {
+            created: Number(v?.created),
+            lastSeen: Number(v?.lastSeen),
+            ip: String(v?.ip ?? ''),
+            agent: String(v?.agent ?? ''),
+            binding: String(v?.binding ?? ''),
+          }
+          const valid =
+            /^[0-9a-f]{64}$/.test(key) &&
+            Number.isFinite(s.created) &&
+            Number.isFinite(s.lastSeen) &&
+            s.created <= now &&
+            !expired(s, now)
+          if (valid) sessions.set(key, s)
+          else dropped++
+        }
+        persistedAt = new Map([...sessions].map(([k, s]) => [k, s.lastSeen]))
+        if (dropped > 0) persist()
+      } catch {
+        console.warn(`admin: ${cfg.sessionStore} is not valid JSON — starting with no sessions`)
+      }
+    }
+  }
+
+  const sweep = (now: number) => {
+    let changed = false
+    for (const [key, s] of sessions) {
+      if (expired(s, now)) {
+        sessions.delete(key)
+        changed = true
+      }
+    }
+    if (changed) persist()
     for (const [ip, f] of failuresByIp) {
       if (now - f.first > cfg.failureWindowMs) failuresByIp.delete(ip)
     }
@@ -277,12 +415,17 @@ export const createAdminAuth = (opts: AuthOptions): AdminAuth => {
     res.setHeader('Set-Cookie', attrs.join('; '))
   }
 
+  const keyOf = (req: express.Request): string | undefined => {
+    const token = parseCookies(req.headers.cookie)[cfg.cookieName]
+    return token ? sha256(token) : undefined
+  }
+
   const guard: express.RequestHandler = (req, res, next) => {
     const now = Date.now()
     sweep(now)
-    const token = parseCookies(req.headers.cookie)[cfg.cookieName]
-    const session = token ? sessions.get(token) : undefined
-    if (!token || !session) {
+    const key = keyOf(req)
+    const session = key ? sessions.get(key) : undefined
+    if (!key || !session) {
       res.status(401).json({ ok: false, error: 'not signed in' })
       return
     }
@@ -291,7 +434,25 @@ export const createAdminAuth = (opts: AuthOptions): AdminAuth => {
       return
     }
     session.lastSeen = now
+    if (now - (persistedAt.get(key) ?? 0) > PERSIST_LAST_SEEN_EVERY_MS) persist()
     next()
+  }
+
+  // What the Security tab shows. The id is a prefix of the token's hash: enough
+  // to name a row, useless as a cookie.
+  const idOf = (key: string) => key.slice(0, 16)
+
+  const revokeOthers = (req: express.Request): number => {
+    const mine = keyOf(req)
+    let n = 0
+    for (const key of [...sessions.keys()]) {
+      if (key !== mine) {
+        sessions.delete(key)
+        n++
+      }
+    }
+    if (n > 0) persist()
+    return n
   }
 
   const routes = express.Router()
@@ -368,23 +529,77 @@ export const createAdminAuth = (opts: AuthOptions): AdminAuth => {
 
     failuresByIp.delete(ip)
     const token = crypto.randomBytes(32).toString('base64url')
-    sessions.set(token, { created: now, lastSeen: now, ip })
+    sessions.set(sha256(token), {
+      created: now,
+      lastSeen: now,
+      ip,
+      agent: describeAgent(req.headers['user-agent']),
+      binding,
+    })
+    persist()
     setCookie(req, res, token)
     console.log(`admin: signed in from ${ip}`)
     res.json({ ok: true })
   })
 
   routes.post('/api/logout', (req, res) => {
-    const token = parseCookies(req.headers.cookie)[cfg.cookieName]
-    if (token) sessions.delete(token)
+    const key = keyOf(req)
+    if (key && sessions.delete(key)) persist()
     clearCookie(req, res)
     res.json({ ok: true })
+  })
+
+  routes.get('/api/sessions', guard, (req, res) => {
+    const mine = keyOf(req)
+    const list = [...sessions]
+      .sort((a, b) => b[1].lastSeen - a[1].lastSeen)
+      .map(([key, s]) => ({
+        id: idOf(key),
+        agent: s.agent,
+        ip: s.ip,
+        created: new Date(s.created).toISOString(),
+        lastSeen: new Date(s.lastSeen).toISOString(),
+        expires: new Date(s.created + cfg.sessionTtlMs).toISOString(),
+        current: key === mine,
+      }))
+    res.json({
+      ok: true,
+      ttlDays: Math.round(cfg.sessionTtlMs / DAY_MS),
+      persisted: !!cfg.sessionStore,
+      sessions: list,
+    })
+  })
+
+  routes.post('/api/sessions/revoke', guard, (req, res) => {
+    const id = String((req.body as any)?.id ?? '')
+    const key = [...sessions.keys()].find((k) => id.length === 16 && idOf(k) === id)
+    if (!key) {
+      res.status(404).json({ ok: false, error: 'no such session — it may have ended already' })
+      return
+    }
+    // Your own row is what Sign out is for, and doing it here would pull the
+    // page out from under the click that asked.
+    if (key === keyOf(req)) {
+      res.status(400).json({ ok: false, error: 'that is this browser — use Sign out instead' })
+      return
+    }
+    sessions.delete(key)
+    persist()
+    console.warn(`admin: session ${id} signed out from ${clientIp(req)}`)
+    res.json({ ok: true })
+  })
+
+  routes.post('/api/sessions/revoke-others', guard, (req, res) => {
+    const n = revokeOthers(req)
+    if (n > 0) console.warn(`admin: ${n} other session(s) signed out from ${clientIp(req)}`)
+    res.json({ ok: true, revoked: n })
   })
 
   return {
     guard,
     routes,
     sessionCount: () => sessions.size,
+    revokeOthers,
     user: cfg.user,
     verifyPassword: async (given: unknown) =>
       typeof given === 'string' &&

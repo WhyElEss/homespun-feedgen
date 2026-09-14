@@ -1,5 +1,6 @@
 import http from 'http'
 import events from 'events'
+import path from 'path'
 import express from 'express'
 import { DidResolver, MemoryCache } from '@atproto/identity'
 import { createServer } from './lexicon'
@@ -75,7 +76,16 @@ const mountAdminUi = (
   // edit there is not merely risky, it is a change that quietly disappears.
   const writable = (process.env.FEEDGEN_ADMIN_MODE ?? 'readonly').toLowerCase() === 'rw'
 
-  const adminAuth = createAdminAuth({ passwordHash, user, totp: totpConfig })
+  // Sessions sit next to the TOTP secret in data/, the one directory the
+  // container can write. Binding them to a .env secret means changing it (which
+  // takes a restart anyway) signs everyone out, the same as a new password.
+  const adminAuth = createAdminAuth({
+    passwordHash,
+    user,
+    totp: totpConfig,
+    sessionStore: path.join(process.env.FEEDGEN_DATA_DIR ?? '/data', 'admin-sessions.json'),
+    sessionBinding: totpSecret ?? '',
+  })
 
   app.use(
     '/admin',

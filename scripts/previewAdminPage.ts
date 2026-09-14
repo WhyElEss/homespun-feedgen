@@ -42,6 +42,7 @@ export type Fixtures = Record<string, unknown>
 // tried before "status", and "totp/status" before both.
 export const ROUTES: [string, string][] = [
   ['api/status', 'status'],
+  ['api/sessions', 'sessions'],
   ['totp/status', 'totp'],
   ['activity', 'activity'],
   ['/record', 'record'],
@@ -146,6 +147,15 @@ export const defaultFixtures = (now: number = Date.now()): Fixtures => {
                retention: { type: 'count', value: 500 } },
     } } },
 
+    sessions: { ok: true, ttlDays: 30, persisted: true, sessions: [
+      { id: 'aaaaaaaaaaaaaaaa', agent: 'Safari on macOS', ip: '203.0.113.7',
+        created: new Date(now - 3 * 86400000).toISOString(), lastSeen: iso,
+        expires: new Date(now + 27 * 86400000).toISOString(), current: true },
+      { id: 'bbbbbbbbbbbbbbbb', agent: 'Safari on iPhone', ip: '198.51.100.4',
+        created: new Date(now - 12 * 86400000).toISOString(),
+        lastSeen: new Date(now - 26 * 3600000).toISOString(),
+        expires: new Date(now + 18 * 86400000).toISOString(), current: false },
+    ] },
     totp: { ok: true, enabled: true, source: 'file', managedHere: true, broken: false,
             file: '/data/admin-totp.json' },
 

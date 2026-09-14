@@ -8,7 +8,13 @@ import os from 'node:os'
 import path from 'node:path'
 import express from 'express'
 import { createAdminRouter } from '../src/admin'
-import { createAdminAuth, hashPassword, verifyPassword, looksLikeHash } from '../src/adminAuth'
+import {
+  createAdminAuth,
+  describeAgent,
+  hashPassword,
+  verifyPassword,
+  looksLikeHash,
+} from '../src/adminAuth'
 import { collectStatus } from '../src/adminStatus'
 import { loadFiltersOnce } from '../src/filter'
 import { createDb, migrateToLatest } from '../src/db'
@@ -251,8 +257,164 @@ const run = async () => {
     const cookie = cookieFrom(await call('/api/login', { body: { user: 'admin', password: PASSWORD } }))
     check('fresh session works', (await call('/api/status', { cookie })).status === 200)
     await new Promise((r) => setTimeout(r, 1300))
-    check('an idle session is dropped', (await call('/api/status', { cookie })).status === 401)
+    check('an idle limit, when asked for, still drops an idle session',
+      (await call('/api/status', { cookie })).status === 401)
     close()
+  }
+  {
+    // The absolute lifetime is the one that matters now: kept busy, a session
+    // must STILL end on time, or a stolen cookie in use would live forever.
+    const auth = createAdminAuth({ passwordHash: hash, sessionTtlMs: 1500 })
+    const { call, close } = await mount(createAdminRouter({ auth, status: async () => ({} as any) }))
+    const cookie = cookieFrom(await call('/api/login', { body: { user: 'admin', password: PASSWORD } }))
+    let busy = true
+    for (let i = 0; i < 4; i++) {
+      await new Promise((r) => setTimeout(r, 250))
+      busy = busy && (await call('/api/status', { cookie })).status === 200
+    }
+    check('a session in constant use keeps working inside its lifetime', busy)
+    await new Promise((r) => setTimeout(r, 1000))
+    check('...and ends at its lifetime anyway — use does not extend it',
+      (await call('/api/status', { cookie })).status === 401)
+    close()
+  }
+  {
+    const auth = createAdminAuth({ passwordHash: hash })
+    const { call, close } = await mount(createAdminRouter({ auth, status: async () => ({} as any) }))
+    const res = await call('/api/login', { body: { user: 'admin', password: PASSWORD } })
+    check('by default a sign-in lasts 30 days',
+      (res.headers.get('set-cookie') ?? '').includes(`Max-Age=${30 * 24 * 3600}`))
+    close()
+  }
+
+  console.log('\n── sessions survive a restart, and nothing else')
+  {
+    const store = path.join(TMP, 'admin-sessions.json')
+    const login = { user: 'admin', password: PASSWORD }
+    const statusOnly = { status: async () => ({} as any) }
+
+    const first = await mount(createAdminRouter({
+      auth: createAdminAuth({ passwordHash: hash, sessionStore: store }), ...statusOnly,
+    }))
+    const signIn = await first.call('/api/login', { body: login })
+    const cookie = cookieFrom(signIn)
+    const token = cookie.split('=')[1]
+    first.close()
+
+    check('signing in writes the store', fs.existsSync(store))
+    check('...readable by its owner only', (fs.statSync(store).mode & 0o777) === 0o600)
+    const stored = fs.readFileSync(store, 'utf8')
+    check('...and it holds no usable token, only a hash of one',
+      token.length > 20 && !stored.includes(token))
+    const saved = fs.readFileSync(store)
+
+    const second = await mount(createAdminRouter({
+      auth: createAdminAuth({ passwordHash: hash, sessionStore: store }), ...statusOnly,
+    }))
+    check('after a restart the same cookie still gets in',
+      (await second.call('/api/status', { cookie })).status === 200)
+    second.close()
+
+    const otherHash = await hashPassword('a different password')
+    fs.writeFileSync(store, saved)
+    const third = await mount(createAdminRouter({
+      auth: createAdminAuth({ passwordHash: otherHash, sessionStore: store }), ...statusOnly,
+    }))
+    check('a new password voids every stored session',
+      (await third.call('/api/status', { cookie })).status === 401)
+    third.close()
+    const savedKey = Object.keys(JSON.parse(saved.toString()).sessions)[0]
+    check('...and they are dropped from the file, not merely ignored',
+      !!savedKey && !fs.readFileSync(store, 'utf8').includes(savedKey))
+
+    fs.writeFileSync(store, saved)
+    const fourth = await mount(createAdminRouter({
+      auth: createAdminAuth({ passwordHash: hash, sessionStore: store, sessionBinding: 'NEWSECRET' }),
+      ...statusOnly,
+    }))
+    check('so does a changed .env second factor',
+      (await fourth.call('/api/status', { cookie })).status === 401)
+    fourth.close()
+
+    fs.writeFileSync(store, '{ this is not json')
+    let survived = true
+    let fifth: Awaited<ReturnType<typeof mount>> | undefined
+    try {
+      fifth = await mount(createAdminRouter({
+        auth: createAdminAuth({ passwordHash: hash, sessionStore: store }), ...statusOnly,
+      }))
+    } catch {
+      survived = false
+    }
+    check('a corrupt store does not stop the service starting', survived && !!fifth)
+    check('...and signs nobody in', (await fifth!.call('/api/status', { cookie })).status === 401)
+    check('...while a fresh sign-in still works',
+      (await fifth!.call('/api/login', { body: login })).status === 200)
+    fifth!.close()
+
+    fs.writeFileSync(store, saved)
+    const sixth = await mount(createAdminRouter({
+      auth: createAdminAuth({ passwordHash: hash, sessionStore: store }), ...statusOnly,
+    }))
+    await sixth.call('/api/logout', { cookie, body: {} })
+    const seventh = await mount(createAdminRouter({
+      auth: createAdminAuth({ passwordHash: hash, sessionStore: store }), ...statusOnly,
+    }))
+    check('signing out is remembered across a restart too',
+      (await seventh.call('/api/status', { cookie })).status === 401)
+    sixth.close()
+    seventh.close()
+  }
+
+  console.log('\n── the list of signed-in browsers')
+  {
+    const auth = createAdminAuth({ passwordHash: hash })
+    const { call, close } = await mount(createAdminRouter({ auth, status: async () => ({} as any) }))
+    const login = { user: 'admin', password: PASSWORD }
+    check('a signed-out visitor cannot list sessions', (await call('/api/sessions')).status === 401)
+    check('...or sign anyone out',
+      (await call('/api/sessions/revoke-others', { body: {} })).status === 401)
+
+    const mac = cookieFrom(await call('/api/login', { body: login }))
+    const phone = cookieFrom(await call('/api/login', { body: login }))
+    const tablet = cookieFrom(await call('/api/login', { body: login }))
+
+    const list = await call('/api/sessions', { cookie: mac })
+    check('every sign-in is listed', list.status === 200 && list.body.sessions.length === 3)
+    check('...exactly one of them marked as this browser',
+      list.body.sessions.filter((s: any) => s.current).length === 1)
+    check('...with the lifetime stated', list.body.ttlDays === 30)
+    check('...and not one token in the reply',
+      [mac, phone, tablet].every((c) => !list.text.includes(c.split('=')[1])))
+
+    const mine = list.body.sessions.find((s: any) => s.current)
+    check('this browser cannot sign itself out from the list',
+      (await call('/api/sessions/revoke', { cookie: mac, body: { id: mine.id } })).status === 400)
+
+    const phoneId = (await call('/api/sessions', { cookie: phone })).body.sessions
+      .find((s: any) => s.current).id
+    const gone = await call('/api/sessions/revoke', { cookie: mac, body: { id: phoneId } })
+    check('another browser can be signed out by its id', gone.status === 200)
+    check('...and its cookie stops working', (await call('/api/status', { cookie: phone })).status === 401)
+    check('...while this one carries on', (await call('/api/status', { cookie: mac })).status === 200)
+    check('an unknown id is a 404, not a silent success',
+      (await call('/api/sessions/revoke', { cookie: mac, body: { id: 'ffffffffffffffff' } })).status === 404)
+    check('a partial id matches nothing',
+      (await call('/api/sessions/revoke', { cookie: mac, body: { id: '' } })).status === 404)
+
+    const rest = await call('/api/sessions/revoke-others', { cookie: mac, body: {} })
+    check('"everywhere else" signs out the rest', rest.status === 200 && rest.body.revoked === 1)
+    check('...the tablet is out', (await call('/api/status', { cookie: tablet })).status === 401)
+    check('...and this browser is not', (await call('/api/status', { cookie: mac })).status === 200)
+    check('a cross-origin sign-out is refused',
+      (await call('/api/sessions/revoke-others', { cookie: mac, body: {}, origin: 'https://evil.example' }))
+        .status === 403)
+    close()
+
+    check('browsers get a name a person recognises',
+      describeAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1') === 'Safari on iPhone' &&
+      describeAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36') === 'Chrome on macOS' &&
+      describeAgent(undefined) === 'unknown browser')
   }
 
   console.log('\n── the status snapshot')

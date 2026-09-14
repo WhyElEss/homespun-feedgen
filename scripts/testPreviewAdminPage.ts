@@ -21,6 +21,8 @@ check('api/status resolves to the status fixture', routeFor('/admin/api/status',
 // status and render nothing anyone could explain.
 check('totp/status is not swallowed by the status route',
   routeFor('/admin/totp/status', fx) === fx.totp)
+check('the Security tab gets its session list',
+  routeFor('/admin/api/sessions', fx) === fx.sessions)
 check('activity resolves', routeFor('/admin/activity', fx) === fx.activity)
 check('filters resolves', routeFor('/admin/filters', fx) === fx.filters)
 check('a feed record resolves', routeFor('/admin/feed/coffee/record', fx) === fx.record)

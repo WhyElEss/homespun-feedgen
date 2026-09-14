@@ -310,6 +310,16 @@ const run = async () => {
     else if (url === '/admin/api/login-meta') { body = { ok: true, totpRequired: true } }
     else if (url === '/admin/api/login') { unauthorized = false; body = { ok: true } }
     else if (url === '/admin/api/logout') { body = { ok: true } }
+    else if (url === '/admin/api/sessions') {
+      body = { ok: true, ttlDays: 30, persisted: true, sessions: [
+        { id: 'aaaaaaaaaaaaaaaa', agent: 'Safari on macOS', ip: '203.0.113.7',
+          created: '2026-08-04T19:00:00.000Z', lastSeen: '2026-08-04T20:00:00.000Z',
+          expires: '2026-09-03T19:00:00.000Z', current: true },
+        { id: 'bbbbbbbbbbbbbbbb', agent: 'Safari on iPhone', ip: '198.51.100.4',
+          created: '2026-08-02T08:00:00.000Z', lastSeen: '2026-08-03T09:00:00.000Z',
+          expires: '2026-09-01T08:00:00.000Z', current: false },
+      ] }
+    }
     else if (url === '/admin/totp/status') {
       body = { ok: true, enabled: false, broken: false, source: null,
                managedHere: true, file: '/data/admin-totp.json' }
