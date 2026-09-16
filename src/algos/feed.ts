@@ -18,7 +18,9 @@ export const makeHandler =
     // Read the config per request, not once at startup: filters.json is
     // hot-reloaded, so changing (or clearing) pinnedPost takes effect within
     // ~10s with no restart.
-    const pinned = getFeedConfig(feedKey)?.pinnedPost
+    const cfg = getFeedConfig(feedKey)
+    const pinned = cfg?.pinnedPost
+    const hideLabels = cfg?.moderationLabels ?? []
 
     // The pin rides on the first page only — repeating it on every page would
     // show it again each time the client scrolls. limit === 1 is skipped
@@ -39,6 +41,29 @@ export const makeHandler =
     // also matches the feed's filters would otherwise appear twice.
     if (pinned !== undefined) {
       builder = builder.where('uri', '!=', pinned)
+    }
+
+    // A post Bluesky's moderation service labelled with a value this feed
+    // names is skipped here, at serve time, rather than deleted: switching the
+    // value off, or the labeler withdrawing the label, brings it back. Done in
+    // the query so a page still holds `limit` rows. The pin is not subject to
+    // it — it is the operator's own choice for the top of the feed.
+    if (hideLabels.length > 0) {
+      const now = new Date().toISOString()
+      builder = builder.where((eb) =>
+        eb.not(
+          eb.exists(
+            eb
+              .selectFrom('post_label')
+              .select('post_label.uri')
+              .whereRef('post_label.uri', '=', 'post.uri')
+              .where('post_label.val', 'in', hideLabels)
+              .where((e) =>
+                e.or([e('post_label.exp', 'is', null), e('post_label.exp', '>', now)]),
+              ),
+          ),
+        ),
+      )
     }
 
     if (params.cursor) {

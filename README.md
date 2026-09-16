@@ -153,6 +153,7 @@ Per feed:
 | `excludeListUri` | optional `at://` URI of a Bluesky list; members' posts are dropped (refreshed hourly; feeds sharing a list share the fetch) |
 | `gifPosts`, `quotePosts`, `selfLabeledPosts` | `allow` \| `exclude` \| `only` |
 | `bridgedPosts` | `allow` (default) \| `exclude` \| `only` — posts federated in from the fediverse by [Bridgy Fed](https://fed.brid.gy). Detected on the record, which stamps `bridgyOriginalUrl`/`bridgyOriginalText`, **not** on the handle: the filter never sees a handle, and a bridge whose handle fails to resolve appears as `handle.invalid` rather than `<user>.<instance>.ap.brid.gy` |
+| `moderationLabels` | optional list of label values, e.g. `["porn", "sexual"]` — posts that **Bluesky's moderation service** has labelled with any of them are not served. See [Moderation labels](#moderation-labels) |
 | `pinnedPost` | optional `at://` URI of a post to serve first, with the client's **Pinned** badge — see below |
 | `retention` | `{"type":"hours","value":72}` or `{"type":"count","value":500}` — how much of this feed is kept |
 | `displayName` | comment only; the name users see lives in the published record |
@@ -176,7 +177,27 @@ yarn test:filters                      # runs against filters.example.json
 FEEDGEN_FILTERS_PATH=./data/filters.json yarn test:filters   # ...or your real one
 yarn test:gc                           # retention logic, throwaway database
 yarn test:pinned                       # pinned post, throwaway database
+yarn test:labels                       # moderation labels, in-memory database, no network
 ```
+
+### Moderation labels
+
+```json
+"moderationLabels": ["porn", "sexual", "nudity"]
+```
+
+`selfLabeledPosts` only sees what the **author** declared, because that is the only label inside the post record. Most adult content is not self-labelled: Bluesky's moderation service (`did:plc:ar7c4by46qjdydhdevvrndac`, an image classifier plus human moderators) labels it afterwards — often within seconds — and that label never travels on the firehose.
+
+So the service follows the labeler directly, for every feed, whether or not any feed uses it:
+
+- **its stream**, `com.atproto.label.subscribeLabels` on `mod.bsky.app` — around 66 000 labels a day; the ones on posts this box stores are written to `post_label`, the rest dropped. The stream keeps its own cursor in `label_state`, not `sub_state`, which holds only Jetstream cursors;
+- **one question per stored post**, `com.atproto.label.queryLabels`, a minute after it arrived, batched 50 at a time. That catches a label issued before the post reached this box, and every post already stored when the feature first runs.
+
+A feed that names a value simply **does not serve** a post carrying it: the filter is in the feed query, so a page still holds `limit` rows. Nothing is deleted. Remove the value — or have Bluesky withdraw the label on appeal, which arrives as a negation on the stream — and the post is back on the next request. The pinned post is exempt. Labels on **accounts** are not followed: Bluesky's own clients hide a post for a label on the post, while an adult label on an account blurs only its avatar and banner; per-feed account moderation is what `excludeListUri` is for.
+
+Measure before choosing values. On a music feed the classifier mostly finds **album art** — nudity on a 1970s sleeve is ordinary, and the labeler is right about the picture and wrong about what the feed is for.
+
+In `/admin` the control shows each value with the number of this feed's stored posts that carry it, so switching one on says what it will hide before you save; whyNot reports a post as *hidden* and names the label; the Status tab shows whether the stream is connected and when the last label arrived.
 
 ### Pinned post
 

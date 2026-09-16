@@ -65,6 +65,7 @@ type RawFeed = {
   quotePosts?: ToggleMode
   selfLabeledPosts?: ToggleMode
   bridgedPosts?: ToggleMode
+  moderationLabels?: string[]
   retention?: Retention
 }
 
@@ -90,6 +91,9 @@ export type FeedConfig = {
   quotePosts: ToggleMode
   selfLabeledPosts: ToggleMode
   bridgedPosts: ToggleMode
+  // Label values from Bluesky's moderation service. A stored post carrying
+  // any of them is not served. Empty means the feed ignores labels.
+  moderationLabels: string[]
   retention: Retention
 }
 
@@ -197,6 +201,30 @@ const compileExcludeListUri = (
   return value
 }
 
+// A label value as the labeler writes it: lower-case words joined by hyphens,
+// with a leading "!" on the system values (!hide, !warn). Checked so a typo is
+// refused on save instead of silently hiding nothing.
+const LABEL_VALUE_RE = /^!?[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+const compileModerationLabels = (
+  value: string[] | undefined,
+  where: string,
+): string[] => {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) {
+    throw new Error(`${where}.moderationLabels: must be an array of label values`)
+  }
+  for (const v of value) {
+    if (typeof v !== 'string' || !LABEL_VALUE_RE.test(v)) {
+      throw new Error(
+        `${where}.moderationLabels: ${JSON.stringify(v)} is not a label value ` +
+          `(lower-case words joined by hyphens, like "porn" or "graphic-media")`,
+      )
+    }
+  }
+  return [...new Set(value)]
+}
+
 const compileFeed = (key: string, raw: RawFeed): FeedConfig => {
   const where = `feeds["${key}"]`
   const includeRaw = raw.includePatterns ?? []
@@ -258,6 +286,9 @@ const compileFeed = (key: string, raw: RawFeed): FeedConfig => {
       `${where}.bridgedPosts`,
       'allow',
     ),
+    // Defaults to none: a label is a judgement made elsewhere, and on a music
+    // feed the labeler mostly finds album art. Each feed opts in per value.
+    moderationLabels: compileModerationLabels(raw.moderationLabels, where),
     retention: compileRetention(raw.retention, where),
   }
 }
@@ -346,6 +377,9 @@ export const loadFilters = (): void => {
         `${cfg.includeDids.size} author DIDs, ` +
         `retention ${cfg.retention.value} ${cfg.retention.type}` +
         (cfg.excludeListUri ? ', + exclude list' : '') +
+        (cfg.moderationLabels.length
+          ? `, hides labels ${cfg.moderationLabels.join(' ')}`
+          : '') +
         (cfg.pinnedPost ? `, pinned ${cfg.pinnedPost}` : ''),
     )
   }

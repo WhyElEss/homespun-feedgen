@@ -1307,6 +1307,26 @@ export const ADMIN_PAGE = `<!doctype html>
       kv('Failed feeds', g.failures == null ? '—' : String(g.failures),
          g.failures ? 'pill bad' : '')
     ])]));
+    // The label stream has no cursor worth showing — it is a sequence number,
+    // not a time — so the proof of life is the last label to arrive. They come
+    // about once a second; ten silent minutes is a stream that has stopped.
+    var ls = s.labels;
+    if (ls) {
+      var lcls = !ls.connected || ls.lastLabelAgoSec == null || ls.lastLabelAgoSec > 600
+        ? 'bad' : ls.lastLabelAgoSec > 120 ? 'warn' : 'ok';
+      var lcard = h('div', { class: 'card pad' }, [h('dl', {}, [
+        kv('Moderation labels', ls.connected ? 'connected' : 'not connected',
+           'pill ' + (ls.connected ? 'ok' : 'bad')),
+        kv('Last label', ls.lastLabelAgoSec == null ? 'none yet' : ago(ls.lastLabelAgoSec) + ' ago',
+           'pill ' + lcls),
+        kv('Posts not checked', String(ls.unchecked))
+      ])]);
+      if (ls.lastCheckError) {
+        lcard.appendChild(h('p', { class: 'small warn-text note', text:
+          'Last check failed, retrying every minute: ' + ls.lastCheckError }));
+      }
+      cursorCards.push(lcard);
+    }
     root.appendChild(h('div', { class: 'grid' }, cursorCards));
     root.appendChild(renderInstances(s));
 
@@ -1591,6 +1611,11 @@ export const ADMIN_PAGE = `<!doctype html>
         var x = was[k] || TOGGLE_DEFAULT[k], y = draft[k] || TOGGLE_DEFAULT[k];
         if (x !== y) out.push(TOGGLE_LABEL[k] + ': ' + x + ' → ' + y);
       });
+      var la = (was.moderationLabels || []).slice().sort().join(', ');
+      var lb = (draft.moderationLabels || []).slice().sort().join(', ');
+      if (la !== lb) {
+        out.push('Moderation labels: ' + (la || 'none') + ' → ' + (lb || 'none'));
+      }
       if ((was.excludeListUri || '') !== (draft.excludeListUri || '')) {
         out.push(draft.excludeListUri ? 'Moderation list set' : 'Moderation list cleared');
       }
@@ -1927,6 +1952,113 @@ export const ADMIN_PAGE = `<!doctype html>
       return el;
     }
 
+    // ── moderation labels
+    //
+    // One chip per value Bluesky's moderation service issues, each saying how
+    // many of this feed's stored posts carry it now — the count is what the
+    // chip is about to hide, and it is on screen before Save. The five adult
+    // values are the reason this exists and stay in view; the rest fold away.
+    // The vocabulary is the labeler's own declaration (app.bsky.labeler.service,
+    // read 2026-09-16) plus the four global adult values its clients define.
+    var LABELS_ADULT = ['porn', 'sexual', 'nudity', 'sexual-figurative', 'graphic-media'];
+    var LABELS_OTHER = ['!hide', '!warn', 'spam', 'scam', 'impersonation',
+      'inauthentic', 'engagement-farming', 'misleading', 'misinformation', 'rumor',
+      'intolerant', 'extremist', 'threat', 'rude', 'self-harm', 'sensitive',
+      'illicit', 'security', 'unsafe-link'];
+
+    function labelsBlock() {
+      var chosen = (draft.moderationLabels || []).slice();
+      var myKey = key;
+      var counts = null;
+      var chipsByVal = {};
+      // One line under the chips, not two: a paragraph inside a block carries
+      // no margin on this page, so a count line above a help line read as one
+      // run of text with a break in the wrong place.
+      var HINT = 'Hidden from the feed, not deleted: switch a label off, or have ' +
+                 'Bluesky withdraw it, and the post is back.';
+      var note = h('div', { class: 'small muted', text: HINT });
+      function sayNote(text, bad) {
+        note.className = 'small ' + (bad ? 'warn-text' : 'muted');
+        note.textContent = text + (bad ? '' : ' ' + HINT);
+      }
+
+      // A value already on disk that the list does not know still gets a chip,
+      // so opening the page can neither hide nor drop it.
+      var other = LABELS_OTHER.slice();
+      chosen.forEach(function (v) {
+        if (LABELS_ADULT.indexOf(v) < 0 && other.indexOf(v) < 0) other.push(v);
+      });
+
+      function chipText(v) {
+        var n = counts && counts[v];
+        return n ? v + ' · ' + n : v;
+      }
+      function makeChip(v) {
+        var b = chip(chipText(v), chosen.indexOf(v) >= 0, function () {
+          var at = chosen.indexOf(v);
+          if (at >= 0) chosen.splice(at, 1); else chosen.push(v);
+          // Kept in the order the chips are drawn, so switching a value off
+          // and on again leaves the draft equal to the file rather than
+          // "changed" in a way the summary cannot name.
+          var order = LABELS_ADULT.concat(other);
+          chosen.sort(function (x, y) { return order.indexOf(x) - order.indexOf(y); });
+          var hadKey = false;
+          try { hadKey = JSON.parse(pristine).moderationLabels !== undefined; } catch (e) {}
+          if (chosen.length || hadKey) draft.moderationLabels = chosen.slice();
+          else delete draft.moderationLabels;
+          paintChip(b, chosen.indexOf(v) >= 0);
+          showDirty();
+        });
+        chipsByVal[v] = b;
+        return b;
+      }
+      var adult = h('div', { class: 'chips' }, LABELS_ADULT.map(makeChip));
+      var rest = h('div', { class: 'chips' }, other.map(makeChip));
+
+      var openOther = chosen.some(function (v) { return LABELS_ADULT.indexOf(v) < 0; });
+      var toggle = h('button', { class: 'linkish' });
+      function paintOther() {
+        toggle.textContent = (openOther ? '− ' : '+ ') + 'other labels (' + other.length + ')';
+        toggle.setAttribute('aria-expanded', openOther ? 'true' : 'false');
+        rest.className = 'chips' + (openOther ? '' : ' hidden');
+      }
+      toggle.addEventListener('click', function () { openOther = !openOther; paintOther(); });
+      paintOther();
+
+      call('labels?feed=' + encodeURIComponent(myKey)).then(function (r) {
+        return r.json().then(function (b) { return { status: r.status, body: b }; });
+      }).then(function (res) {
+        // The picker moved while this was on its way: the answer is about a
+        // feed no longer on screen, and this block has already been replaced.
+        if (key !== myKey) return;
+        if (res.status !== 200 || !res.body.labels) {
+          sayNote('Could not count labelled posts: ' +
+            ((res.body && res.body.error) || 'HTTP ' + res.status), true);
+          return;
+        }
+        var l = res.body.labels;
+        counts = l.counts || {};
+        Object.keys(chipsByVal).forEach(function (v) {
+          chipsByVal[v].textContent = chipText(v);
+        });
+        var labelled = Object.keys(counts).length;
+        sayNote((labelled
+          ? 'The number on a label is how many of the ' + l.stored + ' posts stored here carry it.'
+          : 'None of the ' + l.stored + ' posts stored here carries a label.') +
+          (l.unchecked ? ' ' + l.unchecked + ' not checked yet.' : ''));
+      }).catch(function (e) {
+        if (key !== myKey) return;
+        sayNote('Network error: ' + e.message, true);
+      });
+
+      return block('Remove if — Bluesky moderation labelled it', [
+        adult,
+        h('div', { class: 'toolbar' }, [toggle]),
+        rest,
+        note
+      ]);
+    }
+
     function selectBlock(label, value, options, onChange, note) {
       var sel = h('select', {}, []);
       options.forEach(function (o) {
@@ -2122,6 +2254,8 @@ export const ADMIN_PAGE = `<!doctype html>
         'Matched on the record itself (bridgyOriginalUrl), never on the handle: ' +
         'the filter never sees a handle, and a bridge whose handle fails to ' +
         'resolve shows up as handle.invalid rather than as ap.brid.gy.'));
+
+      blocks.appendChild(labelsBlock());
 
       // Resolve, like the pin below, and for a sharper reason: pasting the
       // bsky.app list link here instead of the at:// URI fails SILENTLY. The
@@ -2768,7 +2902,9 @@ export const ADMIN_PAGE = `<!doctype html>
           kv('Author', '@' + r.handle),
           kv('Posted', r.createdAt ? r.createdAt.replace('T', ' ').slice(0, 19) + 'Z' : '—'),
           kv('Embed', r.embed),
-          kv('Reply', r.isReply ? 'yes — replies are always dropped' : 'no')
+          kv('Reply', r.isReply ? 'yes — replies are always dropped' : 'no'),
+          kv('Moderation labels', (r.moderationLabels || []).length
+            ? r.moderationLabels.join(', ') : 'none')
         ])]);
         body.appendChild(facts);
 
@@ -2885,7 +3021,11 @@ export const ADMIN_PAGE = `<!doctype html>
           return [h('p', { class: 'small', text: f.reason || 'matches this feed' })];
         }
         // Still a plain string where a table cell needs one.
+        function hiddenOf(f) {
+          return f.wouldIndex && (f.hiddenByLabels || []).length > 0;
+        }
         function reasonOf(f) {
+          if (hiddenOf(f)) return 'hidden — labelled ' + f.hiddenByLabels.join(', ');
           if (f.excludeMatch) {
             return 'dropped on "' + f.excludeMatch + '"' +
               (f.excludeComment ? ' — ' + f.excludeComment : '');
@@ -2911,13 +3051,18 @@ export const ADMIN_PAGE = `<!doctype html>
         // noise teaches you to stop reading the table.
         if (mine) {
           var head = h('div', { class: 'row wrapx' }, [
-            h('span', { class: 'pill ' + (mine.wouldIndex ? 'ok' : 'bad'),
-                        text: mine.wouldIndex ? 'matches' : 'dropped' }),
+            h('span', { class: 'pill ' + (mine.wouldIndex && !hiddenOf(mine) ? 'ok' : 'bad'),
+                        text: hiddenOf(mine) ? 'hidden' : mine.wouldIndex ? 'matches' : 'dropped' }),
             h('span', { class: 'small', text: (mine.displayName || mine.key) }),
             h('span', { class: 'small muted',
                         text: mine.stored ? 'in the database' : 'not in the database' })
           ]);
           var kids = [head].concat(reasonNodes(mine));
+          if (hiddenOf(mine)) {
+            kids.push(h('p', { class: 'small', text:
+              'Not shown: Bluesky moderation labelled it ' +
+              mine.hiddenByLabels.join(', ') + ', and this feed hides that.' }));
+          }
           var note = disagreement(mine);
           if (note) kids.push(h('p', { class: 'small warn-text', text: note }));
           body.appendChild(h('div', { class: 'card pad' }, kids));
@@ -2942,8 +3087,8 @@ export const ADMIN_PAGE = `<!doctype html>
           if (!open) return;
           var rows = others.map(function (f) {
             var v = h('td', {}, []);
-            v.appendChild(h('span', { class: 'pill ' + (f.wouldIndex ? 'ok' : 'idle'),
-                                      text: f.wouldIndex ? 'matches' : 'dropped' }));
+            v.appendChild(h('span', { class: 'pill ' + (f.wouldIndex && !hiddenOf(f) ? 'ok' : 'idle'),
+                                      text: hiddenOf(f) ? 'hidden' : f.wouldIndex ? 'matches' : 'dropped' }));
             var why = h('td', { class: 'small' }, []);
             why.appendChild(document.createTextNode(reasonOf(f)));
             var n = disagreement(f);

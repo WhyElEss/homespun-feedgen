@@ -8,6 +8,7 @@ import feedGeneration from './methods/feed-generation'
 import describeGenerator from './methods/describe-generator'
 import { createDb, Database, migrateToLatest } from './db'
 import { JetstreamSubscription } from './subscription'
+import { LabelSubscription, labelCounts } from './labels'
 import { AppContext, Config } from './config'
 import wellKnown from './well-known'
 import { watchFilters } from './filter'
@@ -95,6 +96,7 @@ const mountAdminUi = (
       writable,
       status: () => collectStatus(ctx.db, ctx.cfg, startedAt, writable),
       activity: () => collectActivity(ctx.db),
+      labels: (feed) => labelCounts(ctx.db, feed),
       lab: (feed, filters, refresh) =>
         measureCandidate(ctx.db, feed, filters, { refresh }),
       whyNot: (input) => explainPost(ctx.db, input),
@@ -123,6 +125,7 @@ export class FeedGenerator {
   public adminServer?: http.Server
   public db: Database
   public firehose: JetstreamSubscription
+  public labels: LabelSubscription
   public cfg: Config
 
   constructor(
@@ -134,6 +137,7 @@ export class FeedGenerator {
     this.app = app
     this.db = db
     this.firehose = firehose
+    this.labels = new LabelSubscription(db)
     this.cfg = cfg
   }
 
@@ -181,6 +185,11 @@ export class FeedGenerator {
   async start(): Promise<http.Server> {
     await migrateToLatest(this.db)
     this.firehose.run(this.cfg.subscriptionReconnectDelay)
+    // Moderator labels for the feeds that hide them. Its own connection, its
+    // own cursor: a stalled labeler must never hold up the posts themselves.
+    this.labels.run(this.cfg.subscriptionReconnectDelay).catch((err) =>
+      console.error('labels: could not start', err),
+    )
     this.server = this.app.listen(this.cfg.port, this.cfg.listenhost)
     await events.once(this.server, 'listening')
     // Separate listener, off unless FEEDGEN_ADMIN_PORT is set. Never routed

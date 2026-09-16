@@ -76,6 +76,9 @@ export type AdminRouterOptions = {
   // is slow, huge or holding one half-written file must not be able to take the
   // page that reports the service is healthy down with it.
   activity?: () => Promise<ActivitySnapshot>
+  // When present, GET /labels?feed= is served from it: how many of that feed's
+  // stored posts carry each moderation label, for the control that hides them.
+  labels?: (feed: string) => Promise<unknown>
   // Serve the HTML page at the mount root.
   page?: boolean
   // Enables PUT /filters. False on a standby: its config is overwritten by the
@@ -500,6 +503,22 @@ export const createAdminRouter = (opts: AdminRouterOptions = {}): express.Router
     router.get('/activity', guard, async (_req, res) => {
       try {
         res.json({ ok: true, activity: await activity() })
+      } catch (err: any) {
+        res.status(500).json({ ok: false, error: String(err?.message ?? err) })
+      }
+    })
+  }
+
+  if (opts.labels) {
+    const labels = opts.labels
+    router.get('/labels', guard, async (req, res) => {
+      const feed = String(req.query.feed ?? '').trim()
+      if (!feed) {
+        res.status(400).json({ ok: false, error: 'this page is out of date — reload it and try again.' })
+        return
+      }
+      try {
+        res.json({ ok: true, labels: await labels(feed) })
       } catch (err: any) {
         res.status(500).json({ ok: false, error: String(err?.message ?? err) })
       }

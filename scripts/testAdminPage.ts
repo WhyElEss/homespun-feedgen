@@ -94,6 +94,8 @@ const STATUS = {
     filters: { path: '/data/filters.json', exists: true, modified: null, sizeBytes: 10, sha256: 'abc123abc123' },
     gc: { lastAt: '2026-08-04T20:00:00.000Z', agoSec: 300, nextInSec: 3300,
           intervalSec: 3600, failures: 0 },
+    labels: { connected: true, lastLabelAgoSec: 3, lastCheckAgoSec: 20,
+              lastCheckError: null, unchecked: 2 },
     cursors: [
       { service: 'wss://jet2.example', cursor: 1, at: '2026-07-29T04:29:21.000Z', lagSec: 600000 },
       { service: 'wss://jet1.example', cursor: 2, at: '2026-08-04T20:00:00.000Z', lagSec: 5 },
@@ -212,6 +214,9 @@ const FILTERS = {
         // only ever be tested against a pin added in the same session, and the
         // branch that reports a saved pin being cleared would never run.
         pinnedPost: 'at://did:plc:someone/app.bsky.feed.post/pinned1',
+        // A label already hidden on disk, so opening this feed has to show it
+        // pressed without counting that as an edit.
+        moderationLabels: ['porn'],
       },
       // The minimum a feed can be: no retention, no name, nothing optional.
       // Here because rendering it must not EDIT it — a default written into the
@@ -265,6 +270,11 @@ const run = async () => {
   // to read as a sentence, not as a blank strip that looks broken.
   let activityEmpty = false
   const requested: string[] = []
+  const labelCountsFor: Record<string, unknown> = {
+    coffee: { counts: { porn: 2, spam: 1 }, stored: 100, unchecked: 3 },
+    radio: { counts: { sexual: 4 }, stored: 500, unchecked: 0 },
+    plain: { counts: {}, stored: 7, unchecked: 0 },
+  }
   const fetchStub = (url: string, init?: any) => {
     const method = init?.method ?? (init?.body ? 'POST' : 'GET')
     requested.push(method + ' ' + url)
@@ -289,6 +299,10 @@ const run = async () => {
         : ACTIVITY
     }
     else if (url === '/admin/filters' && method === 'GET') body = JSON.parse(JSON.stringify(FILTERS))
+    else if (url.startsWith('/admin/labels?feed=')) {
+      const feed = decodeURIComponent(url.slice('/admin/labels?feed='.length))
+      body = { ok: true, labels: labelCountsFor[feed] }
+    }
     else if (url === '/admin/lab/measure') {
       // Measure posts assembled() — the whole candidate config with the draft
       // spliced in — so it doubles as a window onto the draft at any moment,
@@ -386,6 +400,20 @@ const run = async () => {
             includeMatch: 'coffee', includeTarget: 'text|alt_text',
             excludeMatch: 'artist', excludeComment: 'offtopic: 3D/models/art/etc',
             excludeTarget: 'text|alt_text|link', mutedByList: false, disagrees: false },
+        ] } }
+    }
+    else if (url === '/admin/whynot' && JSON.parse(init.body).input.includes('labelled')) {
+      body = { ok: true, result: {
+        uri: 'at://did:plc:a/app.bsky.feed.post/4', did: 'did:plc:a', handle: 'ann.example',
+        createdAt: '2026-08-04T10:00:00.000Z', embed: 'app.bsky.embed.images', isReply: false,
+        text: 'fresh coffee outside that window', alt: '', moderationLabels: ['porn'],
+        feeds: [
+          { key: 'coffee', displayName: 'Coffee', stored: true, wouldIndex: true,
+            reason: null, includeMatch: 'coffee', includeTarget: 'text|alt_text',
+            mutedByList: false, hiddenByLabels: ['porn'], disagrees: false },
+          { key: 'radio', displayName: 'Radio', stored: true, wouldIndex: true,
+            reason: null, includeMatch: null, includeTarget: null,
+            mutedByList: false, hiddenByLabels: [], disagrees: false },
         ] } }
     }
     else if (url === '/admin/whynot' && JSON.parse(init.body).input.includes('linkonly')) {
@@ -1557,6 +1585,104 @@ const run = async () => {
   walk(panelOf('lab')).find((e) => e.textContent === 'Undo')!.handlers['click']()
   check('...and Undo takes that back too',
     !textOf(app).includes('Pinned post cleared'))
+
+  // ── moderation labels
+  // A label is a judgement made elsewhere, so the control has to say what it
+  // is about to hide BEFORE Save: each chip carries this feed's count.
+  console.log('\n── moderation labels')
+  const pickedBefore = picker.value
+  const same = (got: unknown, want: unknown) => JSON.stringify(got) === JSON.stringify(want)
+  const eq = (name: string, got: unknown, want: unknown) =>
+    check(name, same(got, want), JSON.stringify(got))
+  picker.value = 'coffee'
+  picker.handlers['change']()
+  await settle()
+  const filtersPane = () => panelOf('filters')
+  const labelChip = (v: string) => walk(filtersPane()).find((e) =>
+    e.tagName === 'BUTTON' && e.className.indexOf('chip') === 0 &&
+    (e.textContent === v || e.textContent.indexOf(v + ' · ') === 0))!
+  check('the block is on the Filters tab',
+    walk(filtersPane()).some((e) => e.className === 'blabel' &&
+      e.textContent === 'Remove if — Bluesky moderation labelled it'))
+  check('its counts are asked for the feed in the picker',
+    requested.includes('GET /admin/labels?feed=coffee'))
+  eq('a label stored posts carry says how many', labelChip('porn')?.textContent, 'porn · 2')
+  eq('...and one none carries is just its name', labelChip('nudity')?.textContent, 'nudity')
+  check('nothing is pressed on a feed that hides nothing',
+    ['porn', 'sexual', 'nudity', 'sexual-figurative', 'graphic-media']
+      .every((v) => labelChip(v).attrs['aria-pressed'] === 'false'))
+  const otherToggle = walk(filtersPane()).find((e) =>
+    e.className === 'linkish' && (e.textContent || '').indexOf('other labels') >= 0)!
+  check('the other labels are folded away', !!otherToggle &&
+    otherToggle.attrs['aria-expanded'] === 'false')
+  eq('...hidden, not absent — and counted too', labelChip('spam')?.textContent, 'spam · 1')
+  check('the note says what the numbers are, and what is not checked yet',
+    textOf(filtersPane()).includes('how many of the 100 posts stored here carry it') &&
+      textOf(filtersPane()).includes('3 not checked yet'))
+  check('...and that hiding is not deleting',
+    textOf(filtersPane()).includes('Hidden from the feed, not deleted'))
+
+  labelChip('porn').handlers['click']()
+  eq('pressing a label presses it', labelChip('porn').attrs['aria-pressed'], 'true')
+  check('...and Save names the change', textOf(app).includes('Moderation labels: none → porn'))
+  eq('...into the draft', (await draftNow())?.moderationLabels, ['porn'])
+  labelChip('porn').handlers['click']()
+  check('pressing it again leaves nothing unsaved',
+    !textOf(app).includes('Moderation labels:'))
+  eq('...and adds no key nobody asked for', (await draftNow())?.moderationLabels, undefined)
+  labelChip('graphic-media').handlers['click']()
+  labelChip('porn').handlers['click']()
+  eq('values are kept in the order the chips are drawn, not the order pressed',
+    (await draftNow())?.moderationLabels, ['porn', 'graphic-media'])
+  labelChip('graphic-media').handlers['click']()
+  labelChip('porn').handlers['click']()
+  check('...and undone the same way', !textOf(app).includes('unsaved change'))
+
+  picker.value = 'radio'
+  picker.handlers['change']()
+  await settle()
+  check('switching feeds asks for that feed\'s counts',
+    requested.includes('GET /admin/labels?feed=radio'))
+  eq('...and shows them', labelChip('sexual')?.textContent, 'sexual · 4')
+  eq('a label saved on disk shows pressed', labelChip('porn').attrs['aria-pressed'], 'true')
+  check('...without counting as an edit', !textOf(app).includes('unsaved change'))
+  labelChip('porn').handlers['click']()
+  check('taking a saved label off is named', textOf(app).includes('Moderation labels: porn → none'))
+  const radioDraft = async () => {
+    measureBtn.handlers['click']()
+    await settle()
+    return measures[measures.length - 1]?.filters?.feeds?.radio
+  }
+  eq('...and leaves the key, emptied, rather than deleting it',
+    (await radioDraft())?.moderationLabels, [])
+  labelChip('porn').handlers['click']()
+  check('...and putting it back is no change at all', !textOf(app).includes('unsaved change'))
+
+  console.log('\n── whyNot says when a label hides a post')
+  picker.value = 'coffee'
+  picker.handlers['change']()
+  await settle()
+  const lField = find(app, 'input').filter((i) =>
+    (i.attrs.placeholder || '').indexOf('bsky.app/profile') >= 0).slice(-1)[0]
+  lField.value = 'https://bsky.app/profile/ann.example/post/labelled'
+  walk(app).find((e) => e.textContent === 'Explain')!.handlers['click']()
+  await settle()
+  const labWhy = textOf(panelOf('lab'))
+  check('the post\'s labels are listed', labWhy.includes('Moderation labels') && labWhy.includes('porn'))
+  check('the verdict is "hidden", not "matches"',
+    walk(panelOf('lab')).some((e) => e.className === 'pill bad' && e.textContent === 'hidden'))
+  check('...saying which label and why',
+    labWhy.includes('Not shown: Bluesky moderation labelled it porn, and this feed hides that.'))
+
+  console.log('\n── the label stream on the Status tab')
+  const st = textOf(panelOf('status'))
+  check('its state is reported', st.includes('Moderation labels') && st.includes('connected'))
+  check('...with the last label and the posts still unchecked',
+    st.includes('Last label') && st.includes('Posts not checked'))
+
+  picker.value = pickedBefore
+  picker.handlers['change']()
+  await settle()
 
   console.log('\n── saving sends the WHOLE config, not just the open feed')
   const save = walk(app).find((e) => e.tagName === 'BUTTON' && e.textContent === 'Save')!

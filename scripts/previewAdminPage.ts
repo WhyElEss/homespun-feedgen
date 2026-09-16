@@ -45,6 +45,7 @@ export const ROUTES: [string, string][] = [
   ['api/sessions', 'sessions'],
   ['totp/status', 'totp'],
   ['activity', 'activity'],
+  ['labels', 'labels'],
   ['/record', 'record'],
   ['whynot', 'whynot'],
   ['filters', 'filters'],
@@ -94,6 +95,8 @@ export const defaultFixtures = (now: number = Date.now()): Fixtures => {
       filters: { path: '/data/filters.json', exists: true, modified: iso,
                  sizeBytes: 4096, sha256: 'abc123abc123' },
       gc: { lastAt: iso, agoSec: 300, nextInSec: 3300, intervalSec: 3600, failures: 0 },
+      labels: { connected: true, lastLabelAgoSec: 2, lastCheckAgoSec: 40,
+                lastCheckError: null, unchecked: 4 },
       cursors: [{ service: 'wss://jetstream1.example', cursor: 2, at: iso, lagSec: 3 }],
       feeds: [
         { key: 'coffee', displayName: 'Coffee', routed: true, rows: 942, oldest: null, newest: null,
@@ -142,6 +145,7 @@ export const defaultFixtures = (now: number = Date.now()): Fixtures => {
                 includePatterns: [{ pattern: '\\bcoffee\\b', comment: 'the topic' }],
                 excludePatterns: [{ pattern: '\\bdiscount\\b', comment: 'storefronts / deals' }],
                 excludeListUri: 'at://did:plc:publisher/app.bsky.graph.list/abc',
+                moderationLabels: ['porn', 'spam'],
                 retention: { type: 'hours', value: 72 } },
       radio: { displayName: 'Radio', includeDids: ['did:plc:someone'],
                retention: { type: 'count', value: 500 } },
@@ -188,6 +192,10 @@ export const defaultFixtures = (now: number = Date.now()): Fixtures => {
           excludeTarget: null, excludePattern: null, mutedByList: false,
           disagrees: false },
       ] } },
+    // Answered for whichever feed is asked about: the preview has no database.
+    // A value in the adult row and one in the folded row, so both show a count.
+    labels: { ok: true, labels: { counts: { porn: 3, sexual: 5, spam: 1 },
+                                  stored: 942, unchecked: 4 } },
     record: { ok: true, record: { displayName: 'Coffee', description: 'A feed about coffee.',
                                   avatar: null }, avatarUrl: null },
   }

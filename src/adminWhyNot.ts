@@ -10,6 +10,7 @@ import {
   buildHaystacks,
   MatchablePost,
 } from './filter'
+import { LABELER_DID, storedLabelsFor } from './labels'
 
 // "Why isn't this post in the feed?" — the question that comes up most, asked
 // of every feed at once instead of one at a time.
@@ -68,6 +69,9 @@ export type FeedVerdict = {
   excludeTarget: string | null
   excludePattern: string | null
   mutedByList: boolean
+  // The labels this feed hides that the post carries. A post can match, be
+  // stored and still not be served: that is this.
+  hiddenByLabels: string[]
   disagrees: boolean
 }
 
@@ -80,6 +84,8 @@ export type WhyNotResult = {
   isReply: boolean
   text: string
   alt: string
+  // Labels Bluesky's moderation service has on the post right now.
+  moderationLabels: string[]
   feeds: FeedVerdict[]
 }
 
@@ -127,6 +133,24 @@ export const explainPost = async (
     .execute()
   const storedIn = new Set(rows.map((r) => r.feed))
 
+  // Both views, because they answer different halves. The AppView says what
+  // the labeler has on the post now — including for a post this box never
+  // stored. The database says what the feed handler will act on, which lags
+  // the labeler by up to a minute for a new post.
+  const now = Date.now()
+  const viewLabels: string[] = (Array.isArray(p.labels) ? p.labels : [])
+    .filter(
+      (l: any) =>
+        l?.src === LABELER_DID &&
+        l?.uri === uri &&
+        !l?.neg &&
+        !(typeof l?.exp === 'string' && Date.parse(l.exp) <= now),
+    )
+    .map((l: any) => String(l.val))
+  const moderationLabels = [
+    ...new Set([...viewLabels, ...(await storedLabelsFor(db, uri, now))]),
+  ].sort()
+
   const feeds: FeedVerdict[] = []
   for (const key of getFeedKeys()) {
     const cfg = getFeedConfig(key)
@@ -170,6 +194,7 @@ export const explainPost = async (
       excludeTarget: verdict.excludeTarget ?? null,
       excludePattern: verdict.excludePattern ?? null,
       mutedByList,
+      hiddenByLabels: cfg.moderationLabels.filter((v) => moderationLabels.includes(v)),
       disagrees: stored !== wouldIndex,
     })
   }
@@ -193,6 +218,7 @@ export const explainPost = async (
     isReply: !!record.reply,
     text: collapse(record.text ?? ''),
     alt: altTexts(record).map(collapse).filter(Boolean).join('  ·  '),
+    moderationLabels,
     feeds,
   }
 }

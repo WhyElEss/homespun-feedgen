@@ -5,6 +5,7 @@ import { Database } from './db'
 import { Config } from './config'
 import { getFeedKeys, getFeedConfig } from './filter'
 import { lastGc, GC_INTERVAL_MS } from './gc'
+import { labelStreamState, uncheckedCount } from './labels'
 
 // A read-only snapshot of what this box is doing: what it serves, how far
 // behind the firehose it is, and what the config on disk currently says.
@@ -60,6 +61,15 @@ export type StatusSnapshot = {
     at: string | null
     lagSec: number | null
   }[]
+  // The moderation label stream (src/labels.ts). Only a label arriving proves
+  // it is alive, the same lesson as the Jetstream cursor.
+  labels: {
+    connected: boolean
+    lastLabelAgoSec: number | null
+    lastCheckAgoSec: number | null
+    lastCheckError: string | null
+    unchecked: number
+  }
   gc: {
     lastAt: string | null
     agoSec: number | null
@@ -172,8 +182,20 @@ export const collectStatus = async (
   const gc = lastGc()
   const gcAgo = gc.at === undefined ? null : Math.round((now - gc.at) / 1000)
 
+  const ls = labelStreamState()
+  const agoOf = (t: number | undefined) =>
+    t === undefined ? null : Math.round((now - t) / 1000)
+  const labels = {
+    connected: ls.connected,
+    lastLabelAgoSec: agoOf(ls.lastLabelAt),
+    lastCheckAgoSec: agoOf(ls.lastCheckAt),
+    lastCheckError: ls.lastCheckError ?? null,
+    unchecked: await uncheckedCount(db),
+  }
+
   return {
     generatedAt: new Date(now).toISOString(),
+    labels,
     gc: {
       lastAt: gc.at === undefined ? null : new Date(gc.at).toISOString(),
       agoSec: gcAgo,
