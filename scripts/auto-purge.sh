@@ -132,8 +132,10 @@ FH="$(filters_hash)"
 [ -n "$FH" ] || { log "ERROR cannot hash data/filters.json"; exit 1; }
 LH="$(list_hash)" || { log "WARN moderation list unreachable, skipping this run"; exit 0; }
 
-PREV_FH=""; PREV_LH=""
-[ -f "$STATE" ] && { PREV_FH=$(sed -n '1p' "$STATE"); PREV_LH=$(sed -n '2p' "$STATE"); }
+PREV_FH=""; PREV_LH=""; FOLLOWUP=""
+[ -f "$STATE" ] && {
+  PREV_FH=$(sed -n '1p' "$STATE"); PREV_LH=$(sed -n '2p' "$STATE"); FOLLOWUP=$(sed -n '3p' "$STATE")
+}
 
 # First ever run: record the baseline and do nothing. Otherwise a fresh install
 # would sweep the whole feed on its first tick.
@@ -143,19 +145,73 @@ if [ -z "$PREV_FH" ]; then
   exit 0
 fi
 
+SERVICE="${FEEDGEN_SERVICE:-$(docker compose config --services 2>/dev/null | head -1)}"
+
 MODES=()
 [ "$FH" != "$PREV_FH" ] && MODES+=("rejected")
 [ "$LH" != "$PREV_LH" ] && MODES+=("blocked")
 
+# ---- the follow-up --blocked sweep -----------------------------------------
+#
+# A block reaches this script and the service at DIFFERENT times. This script
+# sees it on the next 5-minute tick; the service re-reads the list only once an
+# hour. Until it does, the blocked account's new posts are still accepted, and
+# the one sweep the list change triggered is over by then. Nothing else
+# triggers another, so those posts stayed for the whole retention period.
+# Measured 2026-10-08: the block was seen at 02:10, swept at 02:30, the service
+# re-read the list at 03:05, and two posts indexed at 02:33 and 03:03 stayed.
+#
+# So a list change also schedules a second --blocked sweep for after the
+# service has re-read every list. Not a fixed delay: a refresh can fail and
+# keep the old membership (it did for four hours on 2026-10-07), so the sweep
+# waits for the service's own log line saying each list was read. Line 3 of the
+# state file holds the time of the change; empty means nothing is pending.
+FOLLOWUP_GIVE_UP=$((6 * 3600))
+
+exclude_list_uris() {
+  python3 -c "
+import json
+d=json.load(open('data/filters.json'))
+print('\n'.join(sorted({f['excludeListUri'] for f in d['feeds'].values() if f.get('excludeListUri')})))
+" 2>/dev/null
+}
+
+# True once the service has logged a successful read of every list since $1.
+service_reread_lists_since() {
+  local since="$1" logs uri
+  logs=$(docker compose logs --no-log-prefix --since "$since" "$SERVICE" 2>/dev/null) || return 1
+  while IFS= read -r uri; do
+    [ -n "$uri" ] || continue
+    printf '%s\n' "$logs" | grep -F "exclude list $uri: " | grep -Eq ': [0-9]+ accounts$' || return 1
+  done <<< "$(exclude_list_uris)"
+  return 0
+}
+
+NOW=$(date +%s)
+if [ "$LH" != "$PREV_LH" ]; then
+  FOLLOWUP="$NOW"
+elif [ -n "$FOLLOWUP" ]; then
+  if service_reread_lists_since "$FOLLOWUP"; then
+    log "service has re-read the moderation list: follow-up blocked sweep"
+    MODES+=("blocked")
+    FOLLOWUP=""
+  elif [ $((NOW - FOLLOWUP)) -gt "$FOLLOWUP_GIVE_UP" ]; then
+    log "WARN service has not re-read the moderation list in 6 h, follow-up sweep dropped"
+    notify "auto-purge: the service has not re-read the moderation list in 6 h"
+    FOLLOWUP=""
+  fi
+fi
+
+save_state() { printf '%s\n%s\n%s\n' "$FH" "$LH" "$FOLLOWUP" > "$STATE"; }
+
 if [ ${#MODES[@]} -eq 0 ]; then
+  [ "$FOLLOWUP" = "$(sed -n '3p' "$STATE")" ] || save_state
   exit 0
 fi
 
 log "change detected: ${MODES[*]}"
 
 # ---- act -------------------------------------------------------------------
-
-SERVICE="${FEEDGEN_SERVICE:-$(docker compose config --services 2>/dev/null | head -1)}"
 
 purge() { # mode, extra args...
   local m="$1"; shift
@@ -257,4 +313,4 @@ for m in "${MODES[@]}"; do
   done
 done
 
-printf '%s\n%s\n' "$FH" "$LH" > "$STATE"
+save_state
