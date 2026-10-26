@@ -1,4 +1,8 @@
-FROM node:20
+# Node 22, not 20: Node 20 is end-of-life, so the node:20 tag no longer gets
+# fixes. Node bundles its own root store, and 20's still trusts the eMudhra
+# intermediates whose keys leaked in October 2026; 22.23.4 and the bookworm
+# ca-certificates under it do not. Rebuild with --pull to pick up base fixes.
+FROM node:22
 
 WORKDIR /app
 
