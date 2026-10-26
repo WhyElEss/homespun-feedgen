@@ -35,7 +35,6 @@ const run = async () => {
     const ctype = r.headers.get('content-type') ?? ''
     check(path, r.status === 200 && ctype.startsWith(type), `${r.status} ${ctype}`)
   }
-  server.close()
 
   console.log('\n── the bytes are what they claim to be')
   check('favicon-32 is 32x32', pngSize(got['/favicon-32.png']).join('x') === '32x32')
@@ -44,14 +43,23 @@ const run = async () => {
   check('...wrapping the 32 px PNG', got['/favicon.ico'].subarray(22).equals(got['/favicon-32.png']))
   check('the svg is an svg', got['/favicon.svg'].toString().startsWith('<svg'))
 
-  console.log('\n── the admin page links them')
-  for (const tag of [
+  const tags = [
     '<link rel="icon" href="/favicon.svg" type="image/svg+xml">',
     '<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">',
     '<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">',
-  ]) {
-    check(tag.match(/href="([^"]+)"/)![1], ADMIN_PAGE.includes(tag))
-  }
+  ]
+
+  // Safari's Favorites tile comes from the root page, whatever was bookmarked.
+  console.log('\n── the root page links them')
+  const root = await fetch(base + '/')
+  const rootHtml = await root.text()
+  check('/ answers 200 with html', root.status === 200 && (root.headers.get('content-type') ?? '').startsWith('text/html'))
+  for (const tag of tags) check(tag.match(/href="([^"]+)"/)![1], rootHtml.includes(tag))
+  check('...and the page is otherwise empty', rootHtml.includes('<body></body>'))
+  server.close()
+
+  console.log('\n── the admin page links them')
+  for (const tag of tags) check(tag.match(/href="([^"]+)"/)![1], ADMIN_PAGE.includes(tag))
 
   console.log(`\n${pass}/${total} passed`)
   process.exit(pass === total ? 0 : 1)

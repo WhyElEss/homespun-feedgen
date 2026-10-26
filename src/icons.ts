@@ -361,6 +361,24 @@ const ICONS: Record<string, { type: string; body: Buffer | string }> = {
   '/apple-touch-icon.png': { type: 'image/png', body: APPLE_TOUCH_ICON },
 }
 
+// A blank page at the root, only so it can name the icons. Safari builds its
+// Favorites tile from the host's root page, not from the bookmarked URL: with
+// the root a bare 404 it found only the 32 px favicon and drew a letter tile
+// instead. Nothing else is on it, so it tells a visitor nothing about the box.
+export const ROOT_PAGE = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow">
+<title>feedgen</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+</head>
+<body></body>
+</html>
+`
+
 export const iconRoutes = (): express.Router => {
   const router = express.Router()
   for (const [path, icon] of Object.entries(ICONS)) {
@@ -369,5 +387,9 @@ export const iconRoutes = (): express.Router => {
       res.type(icon.type).send(icon.body)
     })
   }
+  router.get('/', (_req, res) => {
+    res.setHeader('Content-Security-Policy', "default-src 'none'; img-src 'self'")
+    res.type('html').send(ROOT_PAGE)
+  })
   return router
 }
