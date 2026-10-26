@@ -19,6 +19,9 @@ export const ADMIN_PAGE = `<!doctype html>
      who is reading it. Covers the links out to bsky.app added below. -->
 <meta name="referrer" content="no-referrer">
 <title>feedgen admin</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <style>
   :root {
     color-scheme: light dark;

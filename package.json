@@ -33,6 +33,7 @@
     "adminTotp": "ts-node scripts/adminTotp.ts",
     "test:gc": "ts-node scripts/testGc.ts",
     "test:adminqr": "ts-node scripts/testAdminQr.ts",
+    "test:icons": "ts-node scripts/testIcons.ts",
     "test:admintotp": "ts-node scripts/testAdminTotp.ts",
     "test:adminauth": "FEEDGEN_FILTERS_PATH=/tmp/adminauth-test-filters.json ts-node scripts/testAdminAuth.ts",
     "test:adminwrite": "FEEDGEN_FILTERS_PATH=/tmp/adminwrite-test-filters.json ts-node scripts/testAdminWrite.ts",

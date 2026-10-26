@@ -11,6 +11,7 @@ import { JetstreamSubscription } from './subscription'
 import { LabelSubscription, labelCounts } from './labels'
 import { AppContext, Config } from './config'
 import wellKnown from './well-known'
+import { iconRoutes } from './icons'
 import { watchFilters } from './filter'
 import { buildAlgos } from './algos'
 import { createAdminRouter, startAdminServer } from './admin'
@@ -177,6 +178,7 @@ export class FeedGenerator {
     describeGenerator(server, ctx)
     app.use(server.xrpc.router)
     app.use(wellKnown(ctx))
+    app.use(iconRoutes())
     mountAdminUi(app, ctx, Date.now())
 
     return new FeedGenerator(app, db, firehose, cfg)
